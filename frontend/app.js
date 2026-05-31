@@ -399,64 +399,14 @@ async function handleGenerate() {
 }
 
 // ═══ Meal Plan Sanitizer (with anti-repetition across all 7 days) ═══
-const RAW_INGREDIENT_SIGNALS = [
-    'flour', 'whole)', 'raw ', '100g', 'gram', 'powder', 'seeds', 'leaves',
-    'extract', 'oil', 'flakes', '(whole', 'bran', 'husk', 'ml', 'protein'
-];
-const MEAL_TYPE_KEYWORDS = {
-    breakfast: ['breakfast', 'morning'],
-    lunch: ['lunch', 'afternoon'],
-    dinner: ['dinner', 'night', 'evening meal'],
-    snack: ['snack', 'tea', 'mid morning', 'evening snack'],
-};
-
 function looksLikeRawIngredient(name) {
-    if (!name) return true;
-    const n = name.toLowerCase();
-    // Raw ingredient signal words
-    if (RAW_INGREDIENT_SIGNALS.some(s => n.includes(s))) return true;
-    // Very short names (1-2 words) are likely raw ingredients
-    if (n.split(' ').length <= 2) return true;
-    // Name ends with a meal time word (like "wheat breakfast", "rice dinner")
-    const mealTimeWords = ['breakfast', 'lunch', 'dinner', 'snack', 'meal', 'morning', 'evening'];
-    if (mealTimeWords.some(w => n.endsWith(w))) return true;
-    return false;
+    if (!name || name.trim() === '') return true;
+    const n = name.trim();
+    // Only flag if it's a single word with no spaces (e.g. "Jowar", "Quinoa")
+    // Multi-word names like "Jowar Roti", "Oats Porridge" are valid dish names
+    return !n.includes(' ');
 }
 
-function mealTypeFromKey(key) {
-    const k = key.toLowerCase();
-    for (const [cat, words] of Object.entries(MEAL_TYPE_KEYWORDS)) {
-        if (words.some(w => k.includes(w))) return cat;
-    }
-    if (k.includes('breakfast')) return 'breakfast';
-    if (k.includes('lunch')) return 'lunch';
-    if (k.includes('dinner')) return 'dinner';
-    return 'snack';
-}
-
-// Build a full shuffled pool of dishes for a meal category across ALL ingredients
-// Used dishes are excluded to prevent repetition across all 7 days
-function getUniqueDishFor(mealCategory, usedNames) {
-    const allIngKeys = Object.keys(INGREDIENT_DISH_MAP).filter(k => k !== '_default');
-    const patientKeys = getPatientIngredientKeys();
-
-    // Collect all dishes for this meal category, patient-specific first
-    const pool = [];
-    [...patientKeys, ...allIngKeys].forEach(key => {
-        const map = INGREDIENT_DISH_MAP[key];
-        if (!map) return;
-        const list = map[mealCategory] || [];
-        list.forEach(dish => {
-            if (!usedNames.has(dish.name) && !pool.some(p => p.name === dish.name)) {
-                pool.push(dish);
-            }
-        });
-    });
-
-    // Shuffle pool so selection isn't always the same
-    pool.sort(() => Math.random() - 0.5);
-    return pool[0] || null;
-}
 
 function sanitizeMealPlan(plan) {
     // Track used dish names across the ENTIRE 7-day plan to prevent repetition
@@ -473,7 +423,7 @@ function sanitizeMealPlan(plan) {
         });
     }
 
-    // Second pass: replace bad meals with unique dishes
+    // Second pass: replace bad (single-bare-word) names with backend-provided yes_foods
     for (let d = 1; d <= 7; d++) {
         const dayKey = `day_${d}`;
         const day = plan[dayKey];
@@ -484,21 +434,13 @@ function sanitizeMealPlan(plan) {
             if (!meal || typeof meal !== 'object' || !('total_calories' in meal)) return;
             if (!looksLikeRawIngredient(meal.name)) return;
 
-            const cat = mealTypeFromKey(mealKey);
-            const dish = getUniqueDishFor(cat, usedNames);
-            if (!dish) return;
-
-            usedNames.add(dish.name); // mark as used
-
-            meal.name = dish.name;
-            meal.ingredients = parseIngredientString(dish.ings);
-            meal.total_calories = dish.cal;
-            meal.protein_g = dish.pro;
-            meal.carbs_g = dish.carb;
-            meal.fat_g = dish.fat;
-            meal.fiber_g = meal.fiber_g || 3;
-            meal.prep_time_min = meal.prep_time_min || 15;
-            meal.benefits = `Recommended for gut health (IOM yes-list)`;
+            if (!patientProfile || !patientProfile.yes_foods || !patientProfile.yes_foods.length) return;
+            const yesIdx = Object.keys(day).filter(k => day[k] && 'total_calories' in day[k]).indexOf(mealKey);
+            const foodName = patientProfile.yes_foods[yesIdx % patientProfile.yes_foods.length];
+            meal.name = foodName + ' preparation';
+            meal.benefits = 'From your IOM-approved food list';
+            // do not change calories/macros — keep LLM values
+            return; // skip the dish.ings reassignment
         });
     }
 }
@@ -526,10 +468,13 @@ function renderProfile(profile) {
 
     const cards = [
         { label: 'Kit ID', value: profile.kit_id },
+        { label: 'Product', value: profile.product_type || 'GutHeal' },
         { label: 'Diet', value: profile.diet_type || 'Veg' },
         { label: 'BMI', value: profile.bmi || 'N/A' },
-        { label: 'IBS Type', value: (profile.ibs_info && profile.ibs_info.subtype) || 'N/A' },
-        { label: 'Severity', value: (profile.ibs_info && profile.ibs_info.severity_level) || 'N/A' },
+        { label: profile.product_type === 'SEnS' ? 'Focus' : 'IBS Type',
+          value: profile.product_type === 'SEnS' ? 'Sleep · Energy · Stress' : ((profile.ibs_info && profile.ibs_info.subtype) || 'N/A') },
+        { label: profile.product_type === 'SEnS' ? 'Challenges' : 'Severity',
+          value: profile.product_type === 'SEnS' ? 'Better Sleep, Higher Energy, Lower Stress' : ((profile.ibs_info && profile.ibs_info.severity_level) || 'N/A') },
         { label: 'Location', value: profile.location || 'N/A' },
         { label: 'Gender', value: profile.gender || 'N/A' },
         { label: 'Age', value: profile.age || 'N/A' },
@@ -546,6 +491,18 @@ function renderProfile(profile) {
         html += `<div class="profile-card" style="grid-column: span 2">
             <div class="profile-card-label">🚫 Avoid List (Food Allergies)</div>
             <div class="profile-card-value">${profile.avoid_list.map(a => `<span class="avoid-tag red">${esc(a)}</span>`).join('')}</div>
+        </div>`;
+    }
+
+    if (profile.avoid_foods && profile.avoid_foods.length) {
+        const shown = profile.avoid_foods.slice(0, 20);
+        const extra = profile.avoid_foods.length - 20;
+        html += `<div class="profile-card" style="grid-column: span 4">
+            <div class="profile-card-label">🔬 Foods to Avoid — Microbiome Report (${profile.avoid_foods.length} items)</div>
+            <div class="profile-card-value" style="font-size:0.7rem">
+                ${shown.map(a => `<span class="avoid-tag red">${esc(a)}</span>`).join('')}
+                ${extra > 0 ? `<span style="color:var(--text-muted)"> +${extra} more</span>` : ''}
+            </div>
         </div>`;
     }
 
@@ -579,11 +536,7 @@ function renderMealPlan(result) {
 }
 
 function renderDayTabs() {
-    const names = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-    $('dayTabs').innerHTML = names.map((n, i) => {
-        const key = `day_${i + 1}`;
-        return `<button class="day-tab ${key === currentDay ? 'active' : ''}" onclick="switchDay('${key}')">${n}</button>`;
-    }).join('');
+    $('dayTabs').innerHTML = `<button class="day-tab active" onclick="switchDay('day_1')">Day 1</button>`;
 }
 
 function switchDay(day) {
@@ -676,6 +629,9 @@ function renderDay(dayKey) {
                     <button class="btn-swap-meal btn-add-side" onclick="openAddMealModal('${dayKey}', '${type}')">
                         ➕ Add Side Dish
                     </button>
+                    <button class="btn-swap-meal" onclick="openSwapModal('${dayKey}', '${type}', '${esc(m.name || '')}')">
+                        🔄 AI Swap
+                    </button>
                 </div>`}
                 ${isSideDish ? `
                 <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
@@ -767,6 +723,13 @@ async function confirmSwap() {
             current_meal: name,
             reason: reason,
         });
+
+        if (result.swap_failed) {
+            showToast(`ℹ️ ${result.message || 'Could not generate a swap — original meal kept.'}`, 'info', 5000);
+            if (card) card.classList.remove('swapping');
+            closeSwapModal();
+            return;
+        }
 
         // Update the meal plan data in memory
         if (result.new_meal && mealPlanData[day]) {
@@ -1049,7 +1012,7 @@ function downloadPDF() {
         doc.setFillColor(79, 70, 229);
         doc.rect(0, 0, PW, 22, 'F');
         setTxt(13, [255,255,255], true);
-        doc.text('NutriGenie  -  7-Day Personalized Meal Plan', LM, 13);
+        doc.text('NutriGenie  -  Personalized 1-Day Meal Plan', LM, 13);
         setTxt(7.5, [200,200,230], false);
         doc.text('IOM Bioworks  |  Kit: ' + kitId + '  |  ' + new Date().toLocaleDateString('en-IN'), LM, 19);
         y = 30;
@@ -1144,7 +1107,7 @@ function downloadPDF() {
 
         // Page footer
         setTxt(7, MUTED, false);
-        doc.text('Page 1 of 8  |  NutriGenie by IOM Bioworks', PW/2, PH-6, {align:'center'});
+        doc.text('Page 1 of 2  |  NutriGenie by IOM Bioworks', PW/2, PH-6, {align:'center'});
 
         // ── PAGES 2-8: One page per day ──────────────────────
         for (let d = 1; d <= 7; d++) {
@@ -1278,7 +1241,7 @@ function downloadPDF() {
 
             // Footer
             setTxt(7, MUTED, false);
-            doc.text('Page '+(d+1)+' of 8  |  NutriGenie by IOM Bioworks', PW/2, PH-6, {align:'center'});
+            doc.text('Page 2 of 2  |  NutriGenie by IOM Bioworks', PW/2, PH-6, {align:'center'});
         }
 
         doc.save(kitId+'_Meal_Plan.pdf');
@@ -1315,6 +1278,16 @@ function getIngredientForDayAndMeal(dayKey, mealCategory) {
     return ingKeys[index] || '_default';
 }
 
+function isDishSafe(dish) {
+    if (!patientProfile) return true;
+    const avoids = [
+        ...(patientProfile.avoid_foods || []),
+        ...(patientProfile.avoid_list || [])
+    ].map(a => a.toLowerCase());
+    const dishText = ((dish.name || '') + ' ' + (dish.ings || '')).toLowerCase();
+    return !avoids.some(a => a.length > 2 && dishText.includes(a));
+}
+
 function openYesListChooser(dayKey, mealType) {
     const category = getMealCategory(mealType);
 
@@ -1331,7 +1304,7 @@ function openYesListChooser(dayKey, mealType) {
         if (!map) return;
         const dishes = map[category] || [];
         if (!dishes.length) return;
-        const unique = dishes.filter(d => !seenNames.has(d.name));
+        const unique = dishes.filter(d => !seenNames.has(d.name) && isDishSafe(d));
         if (!unique.length) return;
         unique.forEach(d => seenNames.add(d.name));
         const isYesList = patientKeys.includes(key);
@@ -1342,7 +1315,7 @@ function openYesListChooser(dayKey, mealType) {
     groups.sort((a, b) => (b.isYesList ? 1 : 0) - (a.isYesList ? 1 : 0));
 
     // Add _default dishes not yet seen
-    const defaultDishes = (INGREDIENT_DISH_MAP['_default'][category] || []).filter(d => !seenNames.has(d.name));
+    const defaultDishes = (INGREDIENT_DISH_MAP['_default'][category] || []).filter(d => !seenNames.has(d.name)).filter(isDishSafe);
     if (defaultDishes.length) {
         groups.push({ label: 'Gut Health Classics', key: '_default', foods: defaultDishes, isYesList: false });
     }

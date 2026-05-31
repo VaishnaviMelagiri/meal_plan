@@ -14,6 +14,7 @@ Globals:
         DATA_BUCKET: !Ref DataBucket
         LLM_MODEL_ID: amazon.nova-micro-v1:0
         MEAL_PLANS_TABLE: !Ref MealPlansTable
+        RECIPES_TABLE: !Ref CustomRecipesTable
 
 Resources:
 
@@ -181,9 +182,6 @@ Resources:
       Handler: lambda_function.lambda_handler
       MemorySize: 256
       Timeout: 30
-      Environment:
-        Variables:
-          RECIPES_TABLE: !Ref CustomRecipesTable
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref CustomRecipesTable
