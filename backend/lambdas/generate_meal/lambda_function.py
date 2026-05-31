@@ -204,9 +204,19 @@ def _load_nutrition_data() -> list:
 
     try:
         obj = s3.get_object(Bucket=DATA_BUCKET, Key="nutrition/indian_nutrition_dataset.json")
-        data = json.loads(obj["Body"].read().decode("utf-8"))
-        _nutrition_cache["data"] = data
-        return data
+        raw_data = json.loads(obj["Body"].read().decode("utf-8"))
+        # Deduplicate by food_id keeping first occurrence, drop corrupt nutrition values
+        seen_ids = set()
+        clean_data = []
+        for item in raw_data:
+            if item["food_id"] in seen_ids:
+                continue
+            if item.get("per_100g", {}).get("calories", 0) >= 50:
+                seen_ids.add(item["food_id"])
+                clean_data.append(item)
+        logger.info(f"IFCT loaded: {len(raw_data)} raw → {len(clean_data)} clean items")
+        _nutrition_cache["data"] = clean_data
+        return clean_data
     except Exception as e:
         logger.error(f"Failed to load nutrition data: {e}")
         return []
@@ -283,7 +293,7 @@ def _generate_meal_plan(patient: dict, relevant_foods: list) -> dict:
             food_lines.append(f"- APPROVED: {f['name_en']} (nutrition estimated)")
         else:
             food_lines.append(
-                f"- APPROVED: {f['name_en']} ({f['category']}): {f['per_100g']['calories']} kcal, "
+                f"- APPROVED: {f['name_en']} ({f.get('category', 'Approved')}): {f['per_100g']['calories']} kcal, "
                 f"protein {f['per_100g']['protein_g']}g, carbs {f['per_100g']['carbs_g']}g, "
                 f"fat {f['per_100g']['fat_g']}g, fiber {f['per_100g']['fiber_g']}g per 100g. "
                 f"Dishes: {', '.join(f.get('common_dishes', [])[:3])}"
@@ -346,13 +356,19 @@ STRICT RULES:
 1. NEVER use any food from the "NEVER USE THESE FOODS" list.
 2. Use ONLY foods from the APPROVED FOODS list.
 3. Every ingredient MUST include an exact quantity in grams (e.g., 100).
-4. For accurate macros, output calories, protein_g, carbs_g, but know our backend calculates exact metrics from your ingredients.
-5. Daily total must be close to the calorie target (±10%).
-6. All meals must be traditional Indian household recipes.
-7. Output ONLY valid JSON. No explanations.
-8. The day has 5 meals: breakfast, mid_morning_snack, lunch, evening_snack, dinner.
-9. Prefer easy-to-digest meals; avoid gas-producing foods where possible.
-10. ACCOMPANIMENTS RULE: If a dry carbohydrate is generated (e.g., Dosa, Roti, Chapati, Idli, Paratha), you MUST pair it with a wet accompaniment (e.g., Dal, Sambar, Sabzi, Chutney). Combine them in the ingredient list and include them in the 'accompaniments' list!
+4. For EVERY ingredient, you MUST provide accurate nutrition per the exact quantity given.
+   Use your training data (USDA/ICMR) for accurate values. This is a medical application —
+   precision matters. Include per-ingredient nutrition in this format:
+   {{"name": "Jowar flour", "quantity_g": 80, "calories": 267, "protein_g": 8.0,
+    "carbs_g": 54.1, "fat_g": 1.1, "fiber_g": 8.2}}
+5. Sum the ingredient nutrition accurately for total_calories, protein_g, carbs_g,
+   fat_g, fiber_g at the meal level.
+6. Daily total must be close to the calorie target (±10%).
+7. All meals must be traditional Indian household recipes.
+8. Output ONLY valid JSON. No explanations.
+9. The day has 5 meals: breakfast, mid_morning_snack, lunch, evening_snack, dinner.
+10. Prefer easy-to-digest meals; avoid gas-producing foods where possible.
+11. ACCOMPANIMENTS RULE: If a dry carbohydrate is generated (e.g., Dosa, Roti, Chapati, Idli, Paratha), you MUST pair it with a wet accompaniment (e.g., Dal, Sambar, Sabzi, Chutney). Combine them in the ingredient list and include them in the 'accompaniments' list!
 
 PATIENT PROFILE:
 - Product: {product_type}
@@ -376,7 +392,7 @@ OUTPUT JSON SCHEMA:
 {{
   "calorie_target": {calorie_target},
   "day_1": {{
-    "breakfast": {{"name": "...", "serving_size": "e.g., 2 dosas", "accompaniments": ["..."], "ingredients": [{{"name": "...", "quantity_g": 100}}], "total_calories": 400, "protein_g": 12, "carbs_g": 50, "fat_g": 10, "fiber_g": 5, "prep_time_min": 15, "benefits": "..."}},
+    "breakfast": {{"name": "...", "serving_size": "e.g., 2 dosas", "accompaniments": ["..."], "ingredients": [{{"name": "...", "quantity_g": 100, "calories": 0, "protein_g": 0, "carbs_g": 0, "fat_g": 0, "fiber_g": 0}}], "total_calories": 400, "protein_g": 12, "carbs_g": 50, "fat_g": 10, "fiber_g": 5, "prep_time_min": 15, "benefits": "..."}},
     "mid_morning_snack": {{...}},
     "lunch": {{...}},
     "evening_snack": {{...}},
@@ -410,26 +426,67 @@ Generate the complete 1-day meal plan now. Output ONLY valid JSON."""
 
 
 def _generate_fallback_plan(patient: dict, foods: list, calorie_target: int) -> dict:
-    """Generate a simple fallback meal plan if Bedrock fails."""
-    plan = {"calorie_target": calorie_target, "note": "Fallback plan — AI was unavailable"}
-    safe_foods = [f for f in foods if f["category"] in ["Cereals", "Pulses", "Vegetables", "Fruits", "Dairy"]][:10]
+    """
+    Fallback when Bedrock is unavailable.
+    Uses the patient's yes_foods list — never hardcodes any food name.
+    All food names come from the patient's own approved food_list.
+    """
+    yes_foods = patient.get("yes_foods", [])
 
-    day_key = "day_1"
-    plan[day_key] = {}
-    for meal_type in ["breakfast", "mid_morning_snack", "lunch", "evening_snack", "dinner"]:
-        food = safe_foods[0] if safe_foods else {"name_en": "Rice", "per_100g": {"calories": 345, "protein_g": 7, "carbs_g": 78, "fat_g": 0.5, "fiber_g": 0.2}}
-        plan[day_key][meal_type] = {
-            "name": f"{food['name_en']} {meal_type.replace('_', ' ')}",
-            "serving_size": "1 serving",
+    # Prefer foods we have IFCT nutrition for; otherwise use yes_foods names only
+    with_nutrition = [f for f in foods
+                      if f.get("per_100g", {}).get("calories", 0) >= 50]
+
+    if not with_nutrition and not yes_foods:
+        return _unavailable_plan(calorie_target)
+
+    meal_slots = ["breakfast", "mid_morning_snack", "lunch", "evening_snack", "dinner"]
+
+    # Build a source list — prefer IFCT-matched foods, pad with yes_foods names if needed
+    sources = (with_nutrition * 5)[:5]
+    if not sources:
+        # No IFCT matches — use yes_foods names with zero nutrition
+        sources = [{"name_en": f, "per_100g": {"calories": 0, "protein_g": 0,
+                   "carbs_g": 0, "fat_g": 0, "fiber_g": 0}}
+                  for f in (yes_foods * 5)[:5]]
+
+    day_plan = {
+        "note": "AI temporarily unavailable — showing approved ingredients only. "
+                "Please contact your IOM nutritionist for full recipe guidance."
+    }
+
+    for i, meal_type in enumerate(meal_slots):
+        base = sources[i]
+        name = base.get("name_en", "")
+        n = base.get("per_100g", {})
+        qty, scale = 150, 1.5
+        day_plan[meal_type] = {
+            "name": f"{name} (simple preparation)",
+            "serving_size": f"{qty}g",
             "accompaniments": [],
-            "ingredients": [{"name": food["name_en"], "quantity_g": 100}],
-            "total_calories": food["per_100g"]["calories"],
-            "protein_g": food["per_100g"]["protein_g"],
-            "carbs_g": food["per_100g"]["carbs_g"],
-            "fat_g": food["per_100g"]["fat_g"],
-            "fiber_g": food["per_100g"]["fiber_g"],
+            "ingredients": [{"name": name, "quantity_g": qty}],
+            "total_calories": round(n.get("calories", 0) * scale),
+            "protein_g": round(n.get("protein_g", 0) * scale, 1),
+            "carbs_g": round(n.get("carbs_g", 0) * scale, 1),
+            "fat_g": round(n.get("fat_g", 0) * scale, 1),
+            "fiber_g": round(n.get("fiber_g", 0) * scale, 1),
+            "prep_time_min": 10,
+            "benefits": f"From your IOM-approved food list. Contact your nutritionist for recipes using {name}.",
+            "nutrition_source": "IFCT_fallback"
         }
-    return plan
+    return {"calorie_target": calorie_target, "day_1": day_plan}
+
+
+def _unavailable_plan(calorie_target: int) -> dict:
+    msg = "Service temporarily unavailable. Please contact your IOM nutritionist."
+    empty = {"name": msg, "serving_size": "N/A", "accompaniments": [],
+             "ingredients": [], "total_calories": 0, "protein_g": 0,
+             "carbs_g": 0, "fat_g": 0, "fiber_g": 0, "prep_time_min": 0,
+             "benefits": msg, "nutrition_source": "unavailable"}
+    return {"calorie_target": calorie_target, "day_1": {
+        "note": msg, "breakfast": empty, "mid_morning_snack": empty,
+        "lunch": empty, "evening_snack": empty, "dinner": empty
+    }}
 
 
 # ═══════════════════════════════════════════════════════════
@@ -453,9 +510,8 @@ def _enrich_with_nutrition(plan: dict, nutrition_data: list) -> dict:
             if not isinstance(meal, dict):
                 continue
 
-            meal_calc = {"cal": 0, "pro": 0, "carb": 0, "fat": 0, "fib": 0}
-
-            # Enrich ingredients with nutrition data
+            # Enrich ingredients with nutrition data (informational / display only —
+            # the LLM-provided meal totals are NOT overridden)
             for ing in meal.get("ingredients", []):
                 food_id = ing.get("food_id", "")
                 food_name = ing.get("name", "").lower()
@@ -480,26 +536,16 @@ def _enrich_with_nutrition(plan: dict, nutrition_data: list) -> dict:
                         "fat_g": ing_fat,
                         "fiber_g": ing_fib,
                     }
-                    
-                    meal_calc["cal"] += ing_cal
-                    meal_calc["pro"] += ing_pro
-                    meal_calc["carb"] += ing_carb
-                    meal_calc["fat"] += ing_fat
-                    meal_calc["fib"] += ing_fib
 
                     if nutrition_info.get("micronutrients"):
                         ing["micronutrients"] = {
                             k: round(v * multiplier, 2)
                             for k, v in nutrition_info["micronutrients"].items()
                         }
-            
-            # OVERRIDE LLM HALLUCINATED MACROS WITH STRICT EXACT MATH
-            if meal_calc["cal"] > 0:
-                meal["total_calories"] = int(meal_calc["cal"])
-                meal["protein_g"] = int(meal_calc["pro"])
-                meal["carbs_g"] = int(meal_calc["carb"])
-                meal["fat_g"] = int(meal_calc["fat"])
-                meal["fiber_g"] = round(meal_calc["fib"], 1)
+
+            # Nova Micro (USDA/ICMR-trained) is the SOLE source of meal-level nutrition.
+            # IFCT name-matching is too unreliable to override these values.
+            meal["nutrition_source"] = "LLM"
 
             # Accumulate daily totals
             daily_totals["calories"] += meal.get("total_calories", 0)

@@ -175,8 +175,15 @@ OUTPUT JSON:
                 new_meal["fiber_g"] = round(meal_calc["fib"], 1)
                 
         else:
-            return _response(500, {"error": "AI failed to generate valid replacement"})
-            
+            return _response(200, {
+                "day": day,
+                "meal_type": meal_type,
+                "replaced": current_meal,
+                "new_meal": None,
+                "swap_failed": True,
+                "message": "Could not generate a swap right now — your original meal has been kept."
+            })
+
         _save_recipe_to_db(new_meal)
 
         return _response(200, {
@@ -188,7 +195,14 @@ OUTPUT JSON:
 
     except Exception as e:
         logger.error(f"Swap error: {e}", exc_info=True)
-        return _response(500, {"error": str(e)})
+        return _response(200, {
+            "day": locals().get("day", ""),
+            "meal_type": locals().get("meal_type", ""),
+            "replaced": locals().get("current_meal", ""),
+            "new_meal": None,
+            "swap_failed": True,
+            "message": "Could not generate a swap right now — your original meal has been kept."
+        })
 
 
 def _load_patient(kit_id):
@@ -211,7 +225,9 @@ def _load_patient(kit_id):
                     avoid_foods.append(food_item)
 
         return {
-            "diet_type": meta.get("Which best describes your usual diet", "Veg"),
+            "diet_type": (meta.get("Which best describes your usual diet") or
+                          meta.get("Please describe your diet:") or
+                          meta.get("Please describe your diet::") or "Veg"),
             "ibs_subtype": meta.get("Do you know which subtype of IBS you have?", ""),
             "allergies": meta.get("Do you have food allergies or intolerances?",
                                   meta.get("Do you have any food allergies or intolerances?", "")),
