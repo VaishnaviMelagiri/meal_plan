@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Personalized Meal Plan Generator | IOM Bioworks</title>
+    <meta name="description"
+        content="AI-powered personalized Indian meal plan generator based on your IOM gut health report.">
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Outfit:wght@400;500;600;700&display=swap"
+        rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+    <!-- jsPDF + html2canvas + html2pdf for PDF generation -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+</head>
+
+<body>
+    <div class="bg-gradient"></div>
+
+    <!-- Navigation -->
+    <nav class="navbar">
+        <div class="nav-brand">
+            <span class="nav-icon">🧬</span>
+            <span class="nav-title">IOM Bioworks</span>
+        </div>
+        <div class="nav-status" id="connectionStatus">
+            <span class="status-dot online"></span>
+            <span class="status-text">Ready</span>
+        </div>
+    </nav>
+
+    <!-- Hero -->
+    <header class="hero">
+        <div class="hero-badge">Personalized Meal Plan Generator • Powered by AI</div>
+        <h1 class="hero-title">
+            Enter Your Kit ID.<br>
+            <span class="gradient-text">Get Your Perfect Meals.</span>
+        </h1>
+        <p class="hero-subtitle">
+            Personalized 7-day Indian meal plan based on your IOM gut health report.<br>
+            <strong>Don't like a meal? Swap it instantly.</strong>
+        </p>
+
+        <!-- Kit ID Input -->
+        <div class="kit-input-container">
+            <div class="kit-input-wrapper">
+                <span class="kit-prefix">🔑</span>
+                <input type="text" id="kitId" placeholder="IOM_KIT001" class="kit-input" value="IOM_KIT001">
+            </div>
+            <button class="btn-generate" id="generateBtn">
+                <span class="btn-text" id="btnText">🍽️ Generate Meal Plan</span>
+                <div class="spinner hidden" id="spinner"></div>
+            </button>
+        </div>
+    </header>
+
+    <!-- Patient Profile -->
+    <section class="section hidden" id="profileSection">
+        <h2 class="section-title">📋 Patient Profile</h2>
+        <div class="profile-grid" id="profileGrid"></div>
+    </section>
+
+    <!-- Meal Plan -->
+    <section class="section hidden" id="mealSection">
+        <div class="meal-plan-header"
+            style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+            <h2 class="section-title">🍛 Your 7-Day Meal Plan</h2>
+            <button class="btn-pdf" id="downloadPdfBtn" onclick="downloadPDF()">📄 Download as PDF</button>
+        </div>
+        <p class="section-desc" id="planInfo"></p>
+        <div class="day-tabs" id="dayTabs"></div>
+        <div class="meals-container" id="mealsContainer"></div>
+        <div class="daily-summary hidden" id="dailySummary"></div>
+    </section>
+
+
+
+    <!-- Add Side Dish Modal -->
+    <div class="modal-overlay hidden" id="addMealModal" onclick="if(event.target===this)closeAddMealModal()">
+        <div class="modal-card">
+            <div class="modal-header">
+                <h3>➕ Add Side Dish</h3>
+                <button class="modal-close" onclick="closeAddMealModal()">✕</button>
+            </div>
+            <div class="modal-body">
+                <label class="modal-label">Meal Type</label>
+                <input type="text" class="modal-input" id="addMealType" placeholder="e.g. Side Dish (Breakfast)">
+                <label class="modal-label" style="margin-top:12px">Dish Name</label>
+                <input type="text" class="modal-input" id="addMealName" placeholder="e.g. Cucumber Raita">
+                <label class="modal-label" style="margin-top:12px">Ingredients (comma-separated)</label>
+                <input type="text" class="modal-input" id="addMealIngredients"
+                    placeholder="e.g. Curd, Cucumber, Cumin, Salt">
+                <div class="modal-macros-grid"
+                    style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px">
+                    <div>
+                        <label class="modal-label">Calories</label>
+                        <input type="number" class="modal-input" id="addMealCal" value="0" min="0">
+                    </div>
+                    <div>
+                        <label class="modal-label">Protein (g)</label>
+                        <input type="number" class="modal-input" id="addMealPro" value="0" min="0">
+                    </div>
+                    <div>
+                        <label class="modal-label">Carbs (g)</label>
+                        <input type="number" class="modal-input" id="addMealCarb" value="0" min="0">
+                    </div>
+                    <div>
+                        <label class="modal-label">Fat (g)</label>
+                        <input type="number" class="modal-input" id="addMealFat" value="0" min="0">
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-swap" onclick="confirmAddMeal()">✅ Add Dish</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Edit Side Dish Modal -->
+    <div class="modal-overlay hidden" id="editMealModal" onclick="if(event.target===this)closeEditMealModal()">
+        <div class="modal-card">
+            <div class="modal-header">
+                <h3>✏️ Edit Side Dish</h3>
+                <button class="modal-close" onclick="closeEditMealModal()">✕</button>
+            </div>
+            <div class="modal-body">
+                <label class="modal-label">Dish Name</label>
+                <input type="text" class="modal-input" id="editMealName" placeholder="e.g. Cucumber Raita">
+                <label class="modal-label" style="margin-top:12px">Ingredients (name (qty), comma-separated)</label>
+                <input type="text" class="modal-input" id="editMealIngredients"
+                    placeholder="e.g. Curd (100g), Cucumber (70g), Cumin (2g)">
+                <div class="modal-macros-grid"
+                    style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px">
+                    <div>
+                        <label class="modal-label">Calories</label>
+                        <input type="number" class="modal-input" id="editMealCal" value="0" min="0">
+                    </div>
+                    <div>
+                        <label class="modal-label">Protein (g)</label>
+                        <input type="number" class="modal-input" id="editMealPro" value="0" min="0">
+                    </div>
+                    <div>
+                        <label class="modal-label">Carbs (g)</label>
+                        <input type="number" class="modal-input" id="editMealCarb" value="0" min="0">
+                    </div>
+                    <div>
+                        <label class="modal-label">Fat (g)</label>
+                        <input type="number" class="modal-input" id="editMealFat" value="0" min="0">
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-secondary" onclick="closeEditMealModal()" style="margin-right:8px">Cancel</button>
+                <button class="btn-swap" onclick="confirmEditMeal()">✅ Save Changes</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <footer class="footer">
+        Personalized Meal Plan Generator by <strong>IOM Bioworks</strong> • Powered by AWS Bedrock + RAG • IFCT
+        Nutrition Data
+    </footer>
+
+    <script src="app.js"></script>
+</body>
+
+</html>
