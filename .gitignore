@@ -35,3 +35,6 @@ node_modules/
 /tmp/
 *.zip
 output.json
+patients/
+index.csv
+iom_data.json
