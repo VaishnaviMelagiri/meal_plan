@@ -143,7 +143,9 @@ Resources:
             BucketName: !Ref DataBucket
         - Statement:
             - Effect: Allow
-              Action: bedrock:InvokeModel
+              Action:
+                - bedrock:InvokeModel
+                - bedrock:Converse
               Resource: '*'
       Events:
         SwapMeal:
