@@ -6,8 +6,7 @@
  */
 
 // ═══ Config ═══
-const API_URL = 'https://ax72uksye8.execute-api.us-east-1.amazonaws.com/prod';
-
+const API_URL = 'https://slthfw3p52.execute-api.us-east-1.amazonaws.com/prod';
 const $ = id => document.getElementById(id);
 
 let currentDay = 'day_1';
@@ -382,6 +381,8 @@ async function handleGenerate() {
         const result = await apiCall('/meal', 'POST', { kit_id: kitId });
 
         mealPlanData = result.meal_plan;
+        window.macroTargets = result.macro_targets || null;
+        window.calorieTarget = result.calorie_target || null;
         sanitizeMealPlan(mealPlanData); // fix raw ingredient names → proper dishes
         currentDay = 'day_1';
         renderMealPlan(result);
@@ -495,13 +496,25 @@ function renderProfile(profile) {
     }
 
     if (profile.avoid_foods && profile.avoid_foods.length) {
-        const shown = profile.avoid_foods.slice(0, 20);
-        const extra = profile.avoid_foods.length - 20;
+        const allFoods = profile.avoid_foods;
+        const shown = allFoods.slice(0, 20);
+        const extra = allFoods.length - 20;
+        const allTags = allFoods.map(a => `<span class="avoid-tag red">${esc(a)}</span>`).join('');
+        const shownTags = shown.map(a => `<span class="avoid-tag red">${esc(a)}</span>`).join('');
+        const moreId = 'avoidFoodsExpanded';
         html += `<div class="profile-card" style="grid-column: span 4">
-            <div class="profile-card-label">🔬 Foods to Avoid — Microbiome Report (${profile.avoid_foods.length} items)</div>
-            <div class="profile-card-value" style="font-size:0.7rem">
-                ${shown.map(a => `<span class="avoid-tag red">${esc(a)}</span>`).join('')}
-                ${extra > 0 ? `<span style="color:var(--text-muted)"> +${extra} more</span>` : ''}
+            <div class="profile-card-label">🔬 Foods to Avoid — Microbiome Report (${allFoods.length} items)</div>
+            <div class="profile-card-value" style="font-size:0.7rem" id="avoidFoodsShort">
+                ${shownTags}
+                ${extra > 0 ? `<span style="color:var(--accent);cursor:pointer;text-decoration:underline;margin-left:4px"
+                    onclick="document.getElementById('avoidFoodsShort').style.display='none';document.getElementById('${moreId}').style.display='block'">
+                    +${extra} more ▼</span>` : ''}
+            </div>
+            <div class="profile-card-value" style="font-size:0.7rem;display:none" id="${moreId}">
+                ${allTags}
+                <span style="color:var(--accent);cursor:pointer;text-decoration:underline;margin-left:4px"
+                    onclick="document.getElementById('${moreId}').style.display='none';document.getElementById('avoidFoodsShort').style.display='block'">
+                    ▲ Show less</span>
             </div>
         </div>`;
     }
@@ -659,19 +672,25 @@ function renderDay(dayKey) {
     const NIN_RDA = isFemale
         ? { cal: 2230, pro: 55, carb: 335, fat: 60, fib: 30, label: 'NIN RDA – Reference Woman' }
         : { cal: 2730, pro: 60, carb: 410, fat: 73, fib: 30, label: 'NIN RDA – Reference Man' };
-    const target = mealPlanData.calorie_target || NIN_RDA.cal;
+    const calTarget = (window.calorieTarget) || NIN_RDA.cal;
+    const proTarget = (window.macroTargets && window.macroTargets.protein_g) || NIN_RDA.pro;
+    const carbTarget = (window.macroTargets && window.macroTargets.carbs_g) || NIN_RDA.carb;
+    const fatTarget = (window.macroTargets && window.macroTargets.fat_g) || NIN_RDA.fat;
+    const fibTarget = (window.macroTargets && window.macroTargets.fiber_g) || NIN_RDA.fib;
     const summary = $('dailySummary');
     summary.classList.remove('hidden');
     summary.innerHTML = `
-        <div class="summary-title">📊 Daily Totals — ${dayKey.replace('_', ' ').replace('d', 'D')}
-            <span style="font-size:0.72rem;font-weight:400;color:var(--text-muted);margin-left:10px">vs ${NIN_RDA.label}</span>
+        <div class="summary-title">📊 Daily Totals
+            <span style="font-size:0.72rem;font-weight:400;color:var(--text-muted);margin-left:10px">
+                Target: ${calTarget} kcal • ${NIN_RDA.label} for reference
+            </span>
         </div>
         <div class="bar-grid">
-            ${makeBar('Calories', totals.cal, target, 'kcal', 'cal')}
-            ${makeBar('Protein', totals.pro, NIN_RDA.pro, 'g', 'pro')}
-            ${makeBar('Carbs', totals.carb, NIN_RDA.carb, 'g', 'carb')}
-            ${makeBar('Fat', totals.fat, NIN_RDA.fat, 'g', 'fat')}
-            ${makeBar('Fiber', totals.fib, NIN_RDA.fib, 'g', 'fib')}
+            ${makeBar('Calories', totals.cal, calTarget, 'kcal', 'cal')}
+            ${makeBar('Protein', totals.pro, proTarget, 'g', 'pro')}
+            ${makeBar('Carbs', totals.carb, carbTarget, 'g', 'carb')}
+            ${makeBar('Fat', totals.fat, fatTarget, 'g', 'fat')}
+            ${makeBar('Fiber', totals.fib, fibTarget, 'g', 'fib')}
         </div>
     `;
 }
@@ -1012,7 +1031,7 @@ function downloadPDF() {
         doc.setFillColor(79, 70, 229);
         doc.rect(0, 0, PW, 22, 'F');
         setTxt(13, [255,255,255], true);
-        doc.text('NutriGenie  -  Personalized 1-Day Meal Plan', LM, 13);
+        doc.text('NutriGenie  -  Personalized Meal Plan', LM, 13);
         setTxt(7.5, [200,200,230], false);
         doc.text('IOM Bioworks  |  Kit: ' + kitId + '  |  ' + new Date().toLocaleDateString('en-IN'), LM, 19);
         y = 30;
