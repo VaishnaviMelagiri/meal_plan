@@ -38,3 +38,8 @@ output.json
 patients/
 index.csv
 iom_data.json
+.env
+.env.*
+*.env
+samconfig.toml
+patients/
