@@ -151,33 +151,45 @@ for kit_id, patient in patients_parsed.items():
     print(f"\n  [{kit_id}]")
     try:
         approved = lf._get_approved_foods(patient, ifct)
-        with_ifct = [f for f in approved if f.get("ifct_match") is not False]
-        llm_only = [f for f in approved if f.get("ifct_match") is False]
 
-        check(f"Approved foods returned ({len(approved)} items)",
-              len(approved) > 0)
-        check(f"IFCT-matched foods: {len(with_ifct)}",
-              True,
-              str([f["name_en"] for f in with_ifct[:5]]))
-        check(f"LLM-estimate foods: {len(llm_only)}",
-              True,
-              str([f.get("name_en", f.get("food_item", "?")) for f in llm_only[:5]]))
+        # New API: returns a dict, not a list
+        check("Returns a dict", isinstance(approved, dict), type(approved).__name__)
+        check("Has 'by_group' key", "by_group" in approved)
+        check("Has 'ifct_lookup' key", "ifct_lookup" in approved)
 
-        # Critical: no avoid foods in approved list
+        by_group = approved.get("by_group", {})
+        ifct_lookup = approved.get("ifct_lookup", {})
+        total = sum(len(v) for v in by_group.values())
+
+        check(f"Approved foods grouped ({len(by_group)} groups, {total} foods)",
+              total > 0,
+              ", ".join(by_group.keys()))
+        check(f"IFCT nutrition hints: {len(ifct_lookup)}",
+              True,
+              str(list(ifct_lookup.keys())[:5]))
+
+        # No cap — every approved yes_food (minus avoids) reaches the LLM
         avoid_set = set(a.lower() for a in
-                        patient.get("avoid_foods", []) + patient.get("avoid_list", []))
-        snuck_in = [f.get("name_en", "") for f in approved
-                    if f.get("name_en", "").lower() in avoid_set]
-        check("No avoid foods in approved list", len(snuck_in) == 0,
+                        patient.get("avoid_foods", []) + patient.get("avoid_list", []) if a)
+        expected = len([f for f in patient.get("yes_foods", [])
+                        if f and f.lower() not in avoid_set])
+        check("No cap — all approved yes_foods present", total == expected,
+              f"{total} grouped vs {expected} expected (no [:25] cap)")
+
+        # Critical: no avoid foods leaked into any group
+        all_grouped = [f for foods in by_group.values() for f in foods]
+        snuck_in = [f for f in all_grouped if f.lower() in avoid_set]
+        check("No avoid foods in approved groups", len(snuck_in) == 0,
               f"Leaked: {snuck_in}" if snuck_in else "clean")
 
-        # Check capped at 25
-        check("Result capped at 25", len(approved) <= 25,
-              f"count = {len(approved)}")
+        # SEnS (pescatarian) must keep all 4 fish under Meat, Fish & Poultry
+        if "SENS" in kit_id:
+            fish = by_group.get("Meat, Fish & Poultry", [])
+            check("SEnS retains all 4 fish", len(fish) == 4, str(fish))
 
     except Exception as e:
         check(f"{kit_id} food matching", False, str(e))
-        approved = []
+        import traceback; traceback.print_exc()
 
 # ── TEST 5: Merged avoids ──────────────────────────────────────────────────────
 
@@ -250,6 +262,8 @@ for kit_id, patient in patients_parsed.items():
     print(f"\n  [{kit_id}]")
     try:
         approved = lf._get_approved_foods(patient, ifct)
+        by_group = approved.get("by_group", {})
+        ifct_lookup = approved.get("ifct_lookup", {})
 
         # Build merged avoids same way as lambda
         merged_avoids = []
@@ -259,32 +273,44 @@ for kit_id, patient in patients_parsed.items():
                 seen_avoids.add(a.lower())
                 merged_avoids.append(a)
 
-        # Build food context same way as lambda
+        # Build grouped food context the SAME way as _generate_meal_plan (no caps)
         food_lines = []
-        for f in approved:
-            if f.get("ifct_match") is False:
-                food_lines.append(f"- APPROVED: {f.get('name_en', '')} (nutrition estimated)")
-            else:
-                n = f.get("per_100g", {})
-                food_lines.append(
-                    f"- APPROVED: {f['name_en']} ({f.get('category', 'Approved')}): "
-                    f"{n.get('calories', 0)} kcal, {n.get('protein_g', 0)}g protein, "
-                    f"{n.get('carbs_g', 0)}g carbs, {n.get('fat_g', 0)}g fat"
-                )
+        for group, foods in by_group.items():
+            food_lines.append(f"\n{group}:")
+            for food in foods:
+                hint = ""
+                if food in ifct_lookup:
+                    n = ifct_lookup[food]
+                    hint = f" ({n['calories_per_100g']} kcal/100g, {n['protein_g']}g protein)"
+                food_lines.append(f"  - {food}{hint}")
         food_context = "\n".join(food_lines)
+        total_approved = sum(len(foods) for foods in by_group.values())
 
-        check("APPROVED foods in prompt", "APPROVED" in food_context,
-              f"{len(food_lines)} food lines")
+        check("Grouped foods in prompt context", total_approved > 0,
+              f"{total_approved} foods across {len(by_group)} groups")
         check("Avoid list not empty", len(merged_avoids) > 0,
               f"{len(merged_avoids)} avoid items")
-        check("USDA/ICMR instruction present",
-              True, "LLM told to use USDA/ICMR data (rule 4 in prompt)")
-        check("No avoid food appears in approved list",
-              not any(a.lower() in food_context.lower() for a in merged_avoids[:5]),
-              "spot check first 5 avoids")
+        # Exact-match semantics — the lambda filters avoids by exact (lowercased) name
+        leaked = [f for foods in by_group.values() for f in foods
+                  if f.lower() in seen_avoids]
+        check("No avoid food in approved context", len(leaked) == 0,
+              f"Leaked: {leaked}" if leaked else "clean")
         check("Product type context correct",
               patient.get("product_type") in ["GutHeal", "SEnS"],
               patient.get("product_type"))
+        if "SENS" in kit_id:
+            check("Fish present in prompt context",
+                  "Mackerel" in food_context and "Trout" in food_context,
+                  "Mackerel/Trout in APPROVED context")
+
+        # End-to-end: build the REAL prompt by forcing the Bedrock call to fail.
+        # This exercises the full f-string (macro_targets, total_approved, product
+        # context, etc.) before the except returns the fallback plan.
+        lf.bedrock.converse.side_effect = Exception("offline-test")
+        plan = lf._generate_meal_plan(patient, approved)
+        check("_generate_meal_plan builds prompt + returns plan",
+              isinstance(plan, dict) and "day_1" in plan,
+              "fell back to plan after forced Bedrock failure")
 
     except Exception as e:
         check(f"{kit_id} prompt check", False, str(e))

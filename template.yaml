@@ -15,6 +15,7 @@ Globals:
         LLM_MODEL_ID: amazon.nova-micro-v1:0
         MEAL_PLANS_TABLE: !Ref MealPlansTable
         RECIPES_TABLE: !Ref CustomRecipesTable
+        ANTHROPIC_API_KEY: ''
 
 Resources:
 
@@ -117,6 +118,8 @@ Resources:
             BucketName: !Ref DataBucket
         - DynamoDBCrudPolicy:
             TableName: !Ref MealPlansTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref CustomRecipesTable
         - Statement:
             - Effect: Allow
               Action:

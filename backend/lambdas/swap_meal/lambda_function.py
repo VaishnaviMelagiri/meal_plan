@@ -22,6 +22,39 @@ bedrock = boto3.client("bedrock-runtime")
 DATA_BUCKET = os.environ.get("DATA_BUCKET", "nutrigenie-data")
 LLM_MODEL_ID = os.environ.get("LLM_MODEL_ID", "amazon.nova-micro-v1:0")
 RECIPES_TABLE = os.environ.get("RECIPES_TABLE", "NutriGenieCustomRecipes")
+GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '')
+
+
+def _call_bedrock(prompt: str) -> str:
+    if GEMINI_API_KEY:
+        import urllib.request
+        url = f'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}'
+        payload = json.dumps({
+            'contents': [{'parts': [{'text': prompt}]}],
+            'generationConfig': {'maxOutputTokens': 5000, 'temperature': 0.7}
+        }).encode()
+        req = urllib.request.Request(url, data=payload,
+            headers={'Content-Type': 'application/json'})
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            result = json.loads(resp.read())
+            return result['candidates'][0]['content']['parts'][0]['text']
+    elif 'titan' in LLM_MODEL_ID.lower():
+        body = json.dumps({
+            'inputText': prompt,
+            'textGenerationConfig': {'maxTokenCount': 4096, 'temperature': 0.7, 'topP': 0.9}
+        })
+        response = bedrock.invoke_model(
+            modelId=LLM_MODEL_ID, contentType='application/json',
+            accept='application/json', body=body)
+        result = json.loads(response['body'].read())
+        return result['results'][0]['outputText']
+    else:
+        response = bedrock.converse(
+            modelId=LLM_MODEL_ID,
+            messages=[{'role': 'user', 'content': [{'text': prompt}]}],
+            inferenceConfig={'maxTokens': 5000, 'temperature': 0.7, 'topP': 0.9}
+        )
+        return response['output']['message']['content'][0]['text']
 
 
 def lambda_handler(event, context):
@@ -123,12 +156,7 @@ OUTPUT JSON:
 
         prompt = system_prompt + "\n\n" + user_prompt
 
-        response = bedrock.converse(
-            modelId=LLM_MODEL_ID,
-            messages=[{"role": "user", "content": [{"text": prompt}]}],
-            inferenceConfig={"maxTokens": 1000, "temperature": 0.4, "topP": 0.9}
-        )
-        content = response["output"]["message"]["content"][0]["text"]
+        content = _call_bedrock(prompt)
 
         # Parse JSON
         json_start = content.find("{")

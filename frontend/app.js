@@ -1049,10 +1049,40 @@ function closeYesListChooser() {
     $('yesListModal').classList.add('hidden');
 }
 
+function getRealisticQty(foodName, mealType) {
+    const name = foodName.toLowerCase();
+    // Fats/oils — tiny amounts
+    if (['ghee', 'olive oil', 'soybean oil', 'coconut oil'].some(f => name.includes(f))) return 5;
+    // Spices — very small
+    if (['curcumin', 'turmeric', 'garlic', 'ginger', 'cinnamon'].some(f => name.includes(f))) return 5;
+    // Nuts — small portion
+    if (['walnuts', 'pistachios', 'almonds', 'cashew', 'peanut'].some(f => name.includes(f))) return 25;
+    // Seeds
+    if (['seed', 'flax', 'chia', 'sesame'].some(f => name.includes(f))) return 10;
+    // Fish/meat — moderate
+    if (['mackerel', 'sardine', 'herring', 'trout', 'fish', 'chicken'].some(f => name.includes(f))) return 100;
+    // Beverages
+    if (['juice', 'tea', 'milk', 'drink', 'water'].some(f => name.includes(f))) return 200;
+    // Whey protein
+    if (name.includes('whey')) return 30;
+    // Honey/sugar — small
+    if (['honey', 'sugar', 'jaggery'].some(f => name.includes(f))) return 10;
+    // Dairy — moderate
+    if (['ghee', 'cream', 'curd', 'yogurt', 'milk'].some(f => name.includes(f))) return 30;
+    // Fruits — standard serving
+    if (mealType === 'mid_morning_snack' || mealType === 'evening_snack') return 100;
+    // Grains — main ingredient gets more
+    if (['oats', 'jowar', 'quinoa', 'rice', 'buckwheat', 'corn', 'tapioca', 'cassava', 'peas', 'moong'].some(f => name.includes(f))) {
+        return mealType === 'lunch' ? 100 : 80;
+    }
+    // Vegetables — standard
+    return 80;
+}
+
 function selectYesListDish(day, mealType, index) {
     const dish = window._yesListSuggestions[index];
     if (!dish || !mealPlanData || !mealPlanData[day]) return;
-    const ingredients = dish.ings.map(name => ({ name, quantity_g: 100 }));
+    const ingredients = dish.ings.map(name => ({ name, quantity_g: getRealisticQty(name, mealType) }));
     const nutrition = calcNutrition(ingredients);
     mealPlanData[day][mealType] = {
         name: dish.name,

@@ -25,6 +25,7 @@ DATA_BUCKET = os.environ.get("DATA_BUCKET", "nutrigenie-data")
 LLM_MODEL_ID = os.environ.get("LLM_MODEL_ID", "amazon.nova-micro-v1:0")
 MEAL_PLANS_TABLE = os.environ.get("MEAL_PLANS_TABLE", "NutriGenieMealPlans")
 RECIPES_TABLE = os.environ.get("RECIPES_TABLE", "NutriGenieCustomRecipes")
+GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '')
 
 # Cache for nutrition data (persists across warm Lambda invocations)
 _nutrition_cache = {"data": None}
@@ -49,10 +50,10 @@ def lambda_handler(event, context):
         nutrition_data = _load_nutrition_data()
 
         # Step 3: Deterministic lookup — approved foods based on patient constraints
-        relevant_foods = _get_approved_foods(patient, nutrition_data)
+        approved_foods = _get_approved_foods(patient, nutrition_data)
 
         # Step 4: Generate meal plan via Bedrock
-        meal_plan = _generate_meal_plan(patient, relevant_foods)
+        meal_plan = _generate_meal_plan(patient, approved_foods)
 
         # Step 5: Enrich with nutrition data
         enriched_plan = _enrich_with_nutrition(meal_plan, nutrition_data)
@@ -63,9 +64,14 @@ def lambda_handler(event, context):
         # Step 7: Save to DynamoDB
         _save_meal_plan_to_db(kit_id, patient, enriched_plan)
 
+        # Personalized targets for the response (deterministic — matches the prompt)
+        calorie_target, _weight_note, macro_targets = _calculate_calorie_target(patient)
+
         return _response(200, {
             "kit_id": kit_id,
             "generated_at": datetime.utcnow().isoformat(),
+            "calorie_target": calorie_target,
+            "macro_targets": macro_targets,
             "patient_summary": {
                 "name": patient.get("name", ""),
                 "diet_type": patient.get("diet_type", ""),
@@ -226,189 +232,230 @@ def _load_nutrition_data() -> list:
 # Approved Food Lookup
 # ═══════════════════════════════════════════════════════════
 
-def _get_approved_foods(patient: dict, nutrition_data: list) -> list:
-    """Deterministically select the foods to offer the LLM.
-
-    Prefers the patient's parsed yes_foods (case-insensitive partial match against
-    the IFCT dataset), falling back to a diet-filtered slice for older JSON without
-    a food_list. Always strips anything in the patient's avoid_foods.
+def _get_approved_foods(patient: dict, nutrition_data: list) -> dict:
     """
-    avoid_foods = [a.lower() for a in patient.get("avoid_foods", []) if a]
+    Returns all patient yes_foods organized for the LLM prompt.
+    No caps — every approved food reaches the LLM.
+    Returns a dict with 'by_group' (grouped by food group) and
+    'ifct_lookup' (nutrition for foods that have IFCT matches).
+    """
+    yes_by_group = patient.get("yes_by_group", {})
+    avoid_foods = set(a.lower() for a in patient.get("avoid_foods", []) + patient.get("avoid_list", []) if a)
 
-    def _is_avoided(name_en: str) -> bool:
-        name_lower = name_en.lower()
-        for avoid in avoid_foods:
-            if avoid and (avoid in name_lower or name_lower in avoid):
-                return True
-        return False
-
-    yes_foods = patient.get("yes_foods", [])
-    approved = []
-
-    if yes_foods:
-        for food_name in yes_foods:
-            if not food_name:
-                continue
-            fn_lower = food_name.lower()
-            matched = False
-            for item in nutrition_data:
-                item_name_lower = item["name_en"].lower()
-                if fn_lower in item_name_lower or item_name_lower in fn_lower:
-                    approved.append(dict(item))
-                    matched = True
-            # No IFCT match — still pass the food through so the LLM estimates nutrition
-            if not matched:
-                approved.append({"name_en": food_name, "ifct_match": False})
-    else:
-        # Old JSON without food_list — filter IFCT by diet + avoid list
-        diet_type = patient.get("diet_type", "") or ""
-        is_veg = "veg" in diet_type.lower()
+    # Build IFCT nutrition lookup keyed by simple food name
+    ifct_lookup = {}
+    for food_name in patient.get("yes_foods", []):
+        if not food_name:
+            continue
+        fn_lower = food_name.lower()
+        # Skip if in avoid list
+        if fn_lower in avoid_foods:
+            continue
+        # Find first reliable IFCT match (cal >= 50)
         for item in nutrition_data:
-            if is_veg and item.get("category") == "Meat, Fish & Poultry":
-                continue
-            if _is_avoided(item["name_en"]):
-                continue
-            approved.append(dict(item))
-            if len(approved) >= 25:
-                break
+            item_lower = item["name_en"].lower()
+            if fn_lower in item_lower or item_lower in fn_lower:
+                n = item.get("per_100g", {})
+                if n.get("calories", 0) >= 50:
+                    ifct_lookup[food_name] = {
+                        "calories_per_100g": n["calories"],
+                        "protein_g": n["protein_g"],
+                        "carbs_g": n["carbs_g"],
+                        "fat_g": n["fat_g"],
+                        "fiber_g": n["fiber_g"],
+                    }
+                    break  # one match per food name, no duplicates
 
-    # Safety net: drop anything matching the avoid list
-    approved = [item for item in approved if not _is_avoided(item.get("name_en", ""))]
+    # Filter avoid foods from yes_by_group
+    clean_by_group = {}
+    for group, foods in yes_by_group.items():
+        clean = [f for f in foods if f.lower() not in avoid_foods]
+        if clean:
+            clean_by_group[group] = clean
 
-    return approved[:25]
+    return {"by_group": clean_by_group, "ifct_lookup": ifct_lookup}
 
 
 # ═══════════════════════════════════════════════════════════
 # Meal Plan Generation via Bedrock
 # ═══════════════════════════════════════════════════════════
 
-def _generate_meal_plan(patient: dict, relevant_foods: list) -> dict:
-    """Generate a 1-day meal plan using Amazon Nova Micro via the Bedrock Converse API."""
-
-    # Build food context for the prompt
-    food_lines = []
-    for f in relevant_foods[:15]:
-        if f.get("ifct_match") is False or "per_100g" not in f:
-            # No IFCT nutrition data — tell the LLM to estimate
-            food_lines.append(f"- APPROVED: {f['name_en']} (nutrition estimated)")
-        else:
-            food_lines.append(
-                f"- APPROVED: {f['name_en']} ({f.get('category', 'Approved')}): {f['per_100g']['calories']} kcal, "
-                f"protein {f['per_100g']['protein_g']}g, carbs {f['per_100g']['carbs_g']}g, "
-                f"fat {f['per_100g']['fat_g']}g, fiber {f['per_100g']['fiber_g']}g per 100g. "
-                f"Dishes: {', '.join(f.get('common_dishes', [])[:3])}"
-            )
-    food_context = "\n".join(food_lines)
-
-    # Build bacteria context
-    increase_context = "\n".join([
-        f"- Increase {b['name']}: {b['description'][:100]}..."
-        for b in patient.get("bacteria_to_increase", [])[:5]
-        if "Other" not in b["name"]
-    ])
-    decrease_context = "\n".join([
-        f"- Decrease {b['name']}: {b['description'][:100]}..."
-        for b in patient.get("bacteria_to_decrease", [])[:5]
-        if "Other" not in b["name"]
-    ])
-
-    # Determine calorie target based on BMI
-    bmi = float(patient.get("bmi", "20") or "20")
-    if bmi < 18.5:
-        calorie_target = 2200
-        weight_note = "UNDERWEIGHT (BMI {:.1f}). Prioritize calorie-dense, nutrient-rich foods.".format(bmi)
-    elif bmi > 25:
-        calorie_target = 1600
-        weight_note = "OVERWEIGHT (BMI {:.1f}). Focus on low-calorie, high-fiber foods.".format(bmi)
-    else:
-        calorie_target = 1800
-        weight_note = f"NORMAL weight (BMI {bmi:.1f})."
-
-    # Build product-specific profile context
-    product_type = patient.get("product_type", "GutHeal")
-    symptoms = patient.get("symptoms", {})
-    if product_type == "SEnS":
-        product_context = (
-            f"- Sleep: {symptoms.get('Disturbed Sleep', 'N/A')}\n"
-            f"- Stress: {symptoms.get('Stress', 'N/A')}\n"
-            f"- Anxiety/Energy: {symptoms.get('Anxiety', 'N/A')}"
-        )
-    else:
-        product_context = (
-            f"- IBS subtype: {patient['ibs_info'].get('subtype', 'N/A')} "
-            f"({patient['ibs_info'].get('severity_level', 'N/A')})"
-        )
-
-    # Merge microbiome avoids (from food_list) with patient allergies/triggers, deduplicated
-    merged_avoids = []
-    seen_avoids = set()
-    for a in list(patient.get('avoid_foods', [])) + list(patient.get('avoid_list', [])):
-        if a and a.lower() not in seen_avoids:
-            seen_avoids.add(a.lower())
-            merged_avoids.append(a)
-    avoid_foods_str = ', '.join(merged_avoids) or 'None'
-
-    prompt = f"""You are a certified Indian clinical nutritionist AI. Generate a personalized 1-day Indian household meal plan.
-
-Your role is composition only — arrange the approved foods into traditional Indian meals. Do not introduce any food not in the APPROVED list.
-
-STRICT RULES:
-1. NEVER use any food from the "NEVER USE THESE FOODS" list.
-2. Use ONLY foods from the APPROVED FOODS list.
-3. Every ingredient MUST include an exact quantity in grams (e.g., 100).
-4. For EVERY ingredient, you MUST provide accurate nutrition per the exact quantity given.
-   Use your training data (USDA/ICMR) for accurate values. This is a medical application —
-   precision matters. Include per-ingredient nutrition in this format:
-   {{"name": "Jowar flour", "quantity_g": 80, "calories": 267, "protein_g": 8.0,
-    "carbs_g": 54.1, "fat_g": 1.1, "fiber_g": 8.2}}
-5. Sum the ingredient nutrition accurately for total_calories, protein_g, carbs_g,
-   fat_g, fiber_g at the meal level.
-6. Daily total must be close to the calorie target (±10%).
-7. All meals must be traditional Indian household recipes.
-8. Output ONLY valid JSON. No explanations.
-9. The day has 5 meals: breakfast, mid_morning_snack, lunch, evening_snack, dinner.
-10. Prefer easy-to-digest meals; avoid gas-producing foods where possible.
-11. ACCOMPANIMENTS RULE: If a dry carbohydrate is generated (e.g., Dosa, Roti, Chapati, Idli, Paratha), you MUST pair it with a wet accompaniment (e.g., Dal, Sambar, Sabzi, Chutney). Combine them in the ingredient list and include them in the 'accompaniments' list!
-
-PATIENT PROFILE:
-- Product: {product_type}
-- Diet: {patient['diet_type']}
-- Location: {patient.get('location', 'India')}
-- Weight status: {weight_note}
-{product_context}
-- Daily calorie target: {calorie_target} kcal
-
-APPROVED FOODS (use ONLY these):
-{food_context}
-
-NEVER USE THESE FOODS (includes microbiome avoids + patient allergies):
-{avoid_foods_str}
-
-BACTERIA GOALS:
-{increase_context or 'None specified'}
-{decrease_context or 'None specified'}
-
-OUTPUT JSON SCHEMA:
-{{
-  "calorie_target": {calorie_target},
-  "day_1": {{
-    "breakfast": {{"name": "...", "serving_size": "e.g., 2 dosas", "accompaniments": ["..."], "ingredients": [{{"name": "...", "quantity_g": 100, "calories": 0, "protein_g": 0, "carbs_g": 0, "fat_g": 0, "fiber_g": 0}}], "total_calories": 400, "protein_g": 12, "carbs_g": 50, "fat_g": 10, "fiber_g": 5, "prep_time_min": 15, "benefits": "..."}},
-    "mid_morning_snack": {{...}},
-    "lunch": {{...}},
-    "evening_snack": {{...}},
-    "dinner": {{...}}
-  }}
-}}
-
-Generate the complete 1-day meal plan now. Output ONLY valid JSON."""
-
+def _calculate_calorie_target(patient: dict) -> tuple:
+    """
+    Calculate personalized calorie target using Mifflin-St Jeor equation.
+    Falls back to BMI-based buckets if data is missing.
+    Returns (calorie_target, weight_note, macro_targets)
+    """
     try:
+        weight_kg = float(patient.get("weight_kg") or 0)
+        height_cm = float(patient.get("height_cm") or 0)
+        age = int(patient.get("age") or 0)
+        gender = str(patient.get("gender") or "").lower()
+        bmi = float(patient.get("bmi") or 0)
+
+        if weight_kg > 0 and height_cm > 0 and age > 0 and gender:
+            # Mifflin-St Jeor BMR
+            if gender.startswith("f"):
+                bmr = (10 * weight_kg) + (6.25 * height_cm) - (5 * age) - 161
+            else:
+                bmr = (10 * weight_kg) + (6.25 * height_cm) - (5 * age) + 5
+
+            # Activity factor from patient data (default light)
+            activity_raw = str(patient.get("metadata_activity", "")).lower()
+            if "sedentary" in activity_raw or "0-2" in activity_raw:
+                activity_factor = 1.2
+                activity_label = "sedentary"
+            elif "moderate" in activity_raw or "5-7" in activity_raw:
+                activity_factor = 1.55
+                activity_label = "moderate activity"
+            else:
+                activity_factor = 1.375
+                activity_label = "light activity"
+
+            tdee = int(bmr * activity_factor)
+
+            # Adjust for BMI goal
+            if bmi < 18.5:
+                calorie_target = tdee + 400  # surplus for weight gain
+                weight_note = f"UNDERWEIGHT (BMI {bmi:.1f}). Target {calorie_target} kcal to support healthy weight gain."
+            elif bmi > 25:
+                calorie_target = max(tdee - 300, 1400)  # mild deficit
+                weight_note = f"OVERWEIGHT (BMI {bmi:.1f}). Target {calorie_target} kcal for gradual weight management."
+            else:
+                calorie_target = tdee
+                weight_note = f"NORMAL weight (BMI {bmi:.1f}). Target {calorie_target} kcal to maintain weight."
+
+        else:
+            # Fallback to BMI buckets
+            bmi = bmi or 22
+            if bmi < 18.5:
+                calorie_target = 2200
+                weight_note = f"UNDERWEIGHT (BMI {bmi:.1f}). Prioritize calorie-dense, nutrient-rich foods."
+            elif bmi > 25:
+                calorie_target = 1600
+                weight_note = f"OVERWEIGHT (BMI {bmi:.1f}). Focus on low-calorie, high-fiber foods."
+            else:
+                calorie_target = 1800
+                weight_note = f"NORMAL weight (BMI {bmi:.1f})."
+
+        # Calculate macro targets based on calorie_target and diet type
+        diet = str(patient.get("diet_type", "")).lower()
+        product = str(patient.get("product_type", "GutHeal"))
+        ibs_type = str(patient.get("ibs_info", {}).get("subtype", "")).lower()
+
+        # IBS-D: moderate fiber (excess worsens diarrhoea)
+        # SEnS/Pescatarian: higher protein for energy and recovery
+        if "diarrhoea" in ibs_type or "diarrhea" in ibs_type:
+            protein_pct, carb_pct, fat_pct = 0.20, 0.55, 0.25
+            fiber_g = 20  # lower for IBS-D
+        elif "pescatarian" in diet or "fish" in diet:
+            protein_pct, carb_pct, fat_pct = 0.25, 0.50, 0.25
+            fiber_g = 30
+        else:
+            protein_pct, carb_pct, fat_pct = 0.18, 0.57, 0.25
+            fiber_g = 30
+
+        macro_targets = {
+            "protein_g": int(calorie_target * protein_pct / 4),
+            "carbs_g": int(calorie_target * carb_pct / 4),
+            "fat_g": int(calorie_target * fat_pct / 9),
+            "fiber_g": fiber_g,
+        }
+
+        return calorie_target, weight_note, macro_targets
+
+    except Exception as e:
+        logger.warning(f"Calorie calc error: {e}, using defaults")
+        return 1800, "NORMAL weight.", {"protein_g": 60, "carbs_g": 250, "fat_g": 50, "fiber_g": 30}
+
+
+def _call_bedrock(prompt: str) -> str:
+    if GEMINI_API_KEY:
+        import urllib.request
+        url = f'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}'
+        payload = json.dumps({
+            'contents': [{'parts': [{'text': prompt}]}],
+            'generationConfig': {'maxOutputTokens': 5000, 'temperature': 0.7}
+        }).encode()
+        req = urllib.request.Request(url, data=payload,
+            headers={'Content-Type': 'application/json'})
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            result = json.loads(resp.read())
+            return result['candidates'][0]['content']['parts'][0]['text']
+    elif 'titan' in LLM_MODEL_ID.lower():
+        body = json.dumps({
+            'inputText': prompt,
+            'textGenerationConfig': {'maxTokenCount': 4096, 'temperature': 0.7, 'topP': 0.9}
+        })
+        response = bedrock.invoke_model(
+            modelId=LLM_MODEL_ID, contentType='application/json',
+            accept='application/json', body=body)
+        result = json.loads(response['body'].read())
+        return result['results'][0]['outputText']
+    else:
         response = bedrock.converse(
             modelId=LLM_MODEL_ID,
-            messages=[{"role": "user", "content": [{"text": prompt}]}],
-            inferenceConfig={"maxTokens": 3000, "temperature": 0.3, "topP": 0.9}
+            messages=[{'role': 'user', 'content': [{'text': prompt}]}],
+            inferenceConfig={'maxTokens': 5000, 'temperature': 0.7, 'topP': 0.9}
         )
-        content = response["output"]["message"]["content"][0]["text"]
+        return response['output']['message']['content'][0]['text']
+
+
+def _generate_meal_plan(patient: dict, approved_foods: dict) -> dict:
+    """Generate a 1-day meal plan using Amazon Nova Micro via the Bedrock Converse API."""
+
+    # Determine personalized calorie + macro targets (Mifflin-St Jeor)
+    calorie_target, weight_note, macro_targets = _calculate_calorie_target(patient)
+
+    product_type = patient.get("product_type", "GutHeal")
+    bmi = patient.get("bmi", "")
+    gender = patient.get("gender", "")
+    age = patient.get("age", "")
+
+    # Build compact food context — names only by group
+    by_group = approved_foods.get("by_group", {})
+    food_lines = []
+    for group, foods in by_group.items():
+        food_lines.append(f"{group}: {', '.join(foods)}")
+    food_context = '\n'.join(food_lines)
+
+    # Allergies only — yes list enforces all other avoids
+    allergy_str = ', '.join(patient.get('avoid_list', [])) or 'None'
+
+    # Bacteria names only
+    increase_names = ', '.join([b['name'] for b in patient.get('bacteria_to_increase', [])])
+
+    # Product context one line
+    if product_type == 'SEnS':
+        health_ctx = f"Focus: Sleep/Energy/Stress. Support bacteria: {increase_names}"
+    else:
+        ibs_sub = patient.get('ibs_info', {}).get('subtype', 'IBS')
+        health_ctx = f"Condition: {ibs_sub}. Support bacteria: {increase_names}"
+
+    prompt = f"""Indian clinical nutritionist. Generate 1-day meal plan as JSON only.
+
+PATIENT: {patient['diet_type']}, BMI {bmi}, {gender}, {age}y. {weight_note}
+HEALTH: {health_ctx}
+TARGET: {calorie_target} kcal (protein {macro_targets['protein_g']}g, carbs {macro_targets['carbs_g']}g, fat {macro_targets['fat_g']}g, fiber {macro_targets['fiber_g']}g)
+
+APPROVED FOODS — use ONLY these, nothing else:
+{food_context}
+
+NEVER USE (allergies): {allergy_str}
+
+RULES:
+1. Every ingredient MUST be from the APPROVED FOODS list above.
+2. Traditional Indian household recipes — use authentic names (Upma, Khichdi, Sabzi, Dal, Curry, Raita etc).
+3. Accurate nutrition per quantity using USDA/ICMR values. Medical application.
+4. Total daily calories within 10% of target.
+5. USE VARIETY — each meal must use different foods from the approved list. Do not repeat the same ingredient across more than 2 meals. Spread across all food groups present.
+6. BALANCE — breakfast should be light, lunch heaviest, dinner light. Snacks under 200 kcal.
+7. Return ONLY valid JSON — no text before or after.
+
+OUTPUT: {{"calorie_target":{calorie_target},"day_1":{{"breakfast":{{"name":"","serving_size":"","accompaniments":[],"ingredients":[{{"name":"","quantity_g":0,"calories":0,"protein_g":0,"carbs_g":0,"fat_g":0,"fiber_g":0}}],"total_calories":0,"protein_g":0,"carbs_g":0,"fat_g":0,"fiber_g":0,"prep_time_min":0,"benefits":""}},"mid_morning_snack":{{...}},"lunch":{{...}},"evening_snack":{{...}},"dinner":{{...}}}}}}"""
+
+    try:
+        content = _call_bedrock(prompt)
 
         # Extract JSON from response
         json_start = content.find("{")
@@ -418,63 +465,95 @@ Generate the complete 1-day meal plan now. Output ONLY valid JSON."""
             return meal_plan
 
         logger.error(f"No valid JSON found in LLM response: {content[:200]}")
-        return _generate_fallback_plan(patient, relevant_foods, calorie_target)
+        return _generate_fallback_plan(patient, approved_foods, calorie_target)
 
     except Exception as e:
         logger.error(f"Bedrock invocation failed: {e}", exc_info=True)
-        return _generate_fallback_plan(patient, relevant_foods, calorie_target)
+        return _generate_fallback_plan(patient, approved_foods, calorie_target)
 
 
-def _generate_fallback_plan(patient: dict, foods: list, calorie_target: int) -> dict:
-    """
-    Fallback when Bedrock is unavailable.
-    Uses the patient's yes_foods list — never hardcodes any food name.
-    All food names come from the patient's own approved food_list.
-    """
-    yes_foods = patient.get("yes_foods", [])
+def _generate_fallback_plan(patient: dict, foods, calorie_target: int) -> dict:
+    yes_by_group = patient.get('yes_by_group', {})
+    yes_foods = patient.get('yes_foods', [])
+    # Handle both old list format and new dict format for foods param
+    ifct_lookup = foods.get('ifct_lookup', {}) if isinstance(foods, dict) else {}
 
-    # Prefer foods we have IFCT nutrition for; otherwise use yes_foods names only
-    with_nutrition = [f for f in foods
-                      if f.get("per_100g", {}).get("calories", 0) >= 50]
-
-    if not with_nutrition and not yes_foods:
+    if not yes_foods:
         return _unavailable_plan(calorie_target)
 
-    meal_slots = ["breakfast", "mid_morning_snack", "lunch", "evening_snack", "dinner"]
+    grains = yes_by_group.get('Grains & Pulses', [])
+    vegs = yes_by_group.get('Vegetables', [])
+    fruits = yes_by_group.get('Fruits', [])
+    dairy = yes_by_group.get('Dairy and Substitutes', [])
+    nuts = yes_by_group.get('Dry Fruits and Nuts', [])
+    fish = yes_by_group.get('Meat, Fish & Poultry', [])
+    spices = yes_by_group.get('Spices', [])
 
-    # Build a source list — prefer IFCT-matched foods, pad with yes_foods names if needed
-    sources = (with_nutrition * 5)[:5]
-    if not sources:
-        # No IFCT matches — use yes_foods names with zero nutrition
-        sources = [{"name_en": f, "per_100g": {"calories": 0, "protein_g": 0,
-                   "carbs_g": 0, "fat_g": 0, "fiber_g": 0}}
-                  for f in (yes_foods * 5)[:5]]
+    def get_nut(food, qty=100):
+        n = ifct_lookup.get(food, {})
+        s = qty / 100
+        if n:
+            return {'total_calories': round(n.get('calories_per_100g', 0) * s),
+                    'protein_g': round(n.get('protein_g', 0) * s, 1),
+                    'carbs_g': round(n.get('carbs_g', 0) * s, 1),
+                    'fat_g': round(n.get('fat_g', 0) * s, 1),
+                    'fiber_g': round(n.get('fiber_g', 0) * s, 1)}
+        return {'total_calories': 0, 'protein_g': 0, 'carbs_g': 0, 'fat_g': 0, 'fiber_g': 0}
 
-    day_plan = {
-        "note": "AI temporarily unavailable — showing approved ingredients only. "
-                "Please contact your IOM nutritionist for full recipe guidance."
-    }
+    def meal(name, ings, benefits):
+        ingredients = []
+        totals = {'total_calories': 0, 'protein_g': 0, 'carbs_g': 0, 'fat_g': 0, 'fiber_g': 0}
+        for food, qty in ings:
+            if not food: continue
+            n = get_nut(food, qty)
+            ingredients.append({'name': food, 'quantity_g': qty})
+            for k in totals: totals[k] = round(totals[k] + n[k], 1)
+        return {'name': name, 'serving_size': '1 serving', 'accompaniments': [],
+                'ingredients': ingredients, 'prep_time_min': 15,
+                'benefits': benefits, 'nutrition_source': 'fallback', **totals}
 
-    for i, meal_type in enumerate(meal_slots):
-        base = sources[i]
-        name = base.get("name_en", "")
-        n = base.get("per_100g", {})
-        qty, scale = 150, 1.5
-        day_plan[meal_type] = {
-            "name": f"{name} (simple preparation)",
-            "serving_size": f"{qty}g",
-            "accompaniments": [],
-            "ingredients": [{"name": name, "quantity_g": qty}],
-            "total_calories": round(n.get("calories", 0) * scale),
-            "protein_g": round(n.get("protein_g", 0) * scale, 1),
-            "carbs_g": round(n.get("carbs_g", 0) * scale, 1),
-            "fat_g": round(n.get("fat_g", 0) * scale, 1),
-            "fiber_g": round(n.get("fiber_g", 0) * scale, 1),
-            "prep_time_min": 10,
-            "benefits": f"From your IOM-approved food list. Contact your nutritionist for recipes using {name}.",
-            "nutrition_source": "IFCT_fallback"
-        }
-    return {"calorie_target": calorie_target, "day_1": day_plan}
+    g1 = grains[0] if grains else yes_foods[0]
+    g2 = grains[1] if len(grains) > 1 else g1
+    g3 = grains[2] if len(grains) > 2 else g1
+    v1 = vegs[0] if vegs else g1
+    v2 = vegs[1] if len(vegs) > 1 else v1
+    v3 = vegs[2] if len(vegs) > 2 else v1
+    f1 = fruits[0] if fruits else (nuts[0] if nuts else g1)
+    f2 = fruits[1] if len(fruits) > 1 else f1
+    n1 = nuts[0] if nuts else (fruits[0] if fruits else g1)
+    sp = spices[0] if spices else ''
+    ghee = 'Ghee' if 'Ghee' in dairy else (dairy[0] if dairy else '')
+    ghee_ing = [(ghee, 5)] if ghee else []
+    fish1 = fish[0] if fish else ''
+
+    return {'calorie_target': calorie_target, 'day_1': {
+        'note': 'Suggested plan from your approved foods. Regenerate for AI-personalized recipes.',
+        'breakfast': meal(
+            f'{g1} Porridge{(" with " + sp) if sp else ""}',
+            [(g1, 80), (v1, 50)] + ghee_ing,
+            f'Gut-friendly breakfast using approved {g1}.'
+        ),
+        'mid_morning_snack': meal(
+            f'Fresh {f1} with {n1}',
+            [(f1, 100), (n1, 25)],
+            'Light snack from approved fruits and nuts.'
+        ),
+        'lunch': meal(
+            f'{g2} with {v1} and {v2}{(" and " + ghee) if ghee else ""}',
+            [(g2, 100), (v1, 80), (v2, 60)] + ghee_ing,
+            'Balanced lunch using approved grains and vegetables.'
+        ),
+        'evening_snack': meal(
+            f'{fish1} preparation{(" with " + sp) if sp else ""}' if fish1 else f'{f2} with {n1}',
+            [(fish1, 100), (v3, 40)] if fish1 else [(f2, 80), (n1, 20)],
+            'Protein-rich snack.' if fish1 else 'Light evening snack.'
+        ),
+        'dinner': meal(
+            f'{g3} Khichdi with {v2}{(" and " + ghee) if ghee else ""}',
+            [(g3, 80), (v2, 60), (v3, 40)] + ghee_ing,
+            'Light dinner. Easy to digest for gut health.'
+        ),
+    }}
 
 
 def _unavailable_plan(calorie_target: int) -> dict:
