@@ -40,8 +40,8 @@
             <span class="gradient-text">Get Your Perfect Meals.</span>
         </h1>
         <p class="hero-subtitle">
-            Personalized 7-day Indian meal plan based on your IOM gut health report.<br>
-            <strong>Don't like a meal? Swap it instantly.</strong>
+            Personalized Indian meal plan based on your IOM gut health report.<br>
+            <strong>Choose meals from your approved food list anytime.</strong>
         </p>
 
         <!-- Kit ID Input -->
@@ -67,7 +67,7 @@
     <section class="section hidden" id="mealSection">
         <div class="meal-plan-header"
             style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
-            <h2 class="section-title">🍛 Your 7-Day Meal Plan</h2>
+            <h2 class="section-title">🍛 Your Personalized Meal Plan</h2>
             <button class="btn-pdf" id="downloadPdfBtn" onclick="downloadPDF()">📄 Download as PDF</button>
         </div>
         <p class="section-desc" id="planInfo"></p>
@@ -159,12 +159,22 @@
         </div>
     </div>
 
+    <!-- Yes-List Chooser Modal -->
+    <div class="modal-overlay hidden" id="yesListModal" onclick="if(event.target===this)closeYesListChooser()">
+        <div class="modal-card" style="max-width:560px">
+            <div class="modal-header">
+                <h3>🥗 Choose from Yes-List</h3>
+                <button class="modal-close" onclick="closeYesListChooser()">✕</button>
+            </div>
+            <div class="modal-body" style="max-height:60vh;overflow-y:auto;padding:16px"></div>
+        </div>
+    </div>
+
     <!-- Toast -->
     <div class="toast-container" id="toastContainer"></div>
 
     <footer class="footer">
-        Personalized Meal Plan Generator by <strong>IOM Bioworks</strong> • Powered by AWS Bedrock + RAG • IFCT
-        Nutrition Data
+        Personalized Meal Plan Generator by <strong>IOM Bioworks</strong> • Microbiome-driven nutrition
     </footer>
 
     <script src="app.js"></script>
