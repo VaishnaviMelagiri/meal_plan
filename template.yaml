@@ -171,6 +171,25 @@ Resources:
             Method: POST
             RestApiId: !Ref NutriGenieApi
 
+  HistoryFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: nutrigenie-history
+      CodeUri: backend/lambdas/history/
+      Handler: lambda_function.lambda_handler
+      MemorySize: 256
+      Timeout: 10
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref MealPlansTable
+      Events:
+        GetHistory:
+          Type: Api
+          Properties:
+            Path: /history/{kit_id}
+            Method: GET
+            RestApiId: !Ref NutriGenieApi
+
   # ─── Lambda Layer (pypdf) ──────────────────────────
   PyPdfLayer:
     Type: AWS::Serverless::LayerVersion

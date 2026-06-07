@@ -69,12 +69,21 @@
             style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
             <h2 class="section-title">🍛 Your Personalized Meal Plan</h2>
             <button class="btn-pdf" id="downloadPdfBtn" onclick="downloadPDF()">📄 Download as PDF</button>
+            <button class="btn-secondary" onclick="regeneratePlan()" id="regenerateBtn" style="display:none">
+                🔄 Regenerate Plan
+            </button>
         </div>
         <p class="section-desc" id="planInfo"></p>
         <div class="day-tabs" id="dayTabs"></div>
         <div class="meals-container" id="mealsContainer"></div>
         <div class="daily-summary hidden" id="dailySummary"></div>
     </section>
+
+    <!-- Plan History -->
+    <div id="historySection" class="hidden" style="margin-top:24px">
+        <h3 style="color:var(--text-primary);margin-bottom:12px">📋 Previous Meal Plans</h3>
+        <div id="historyList"></div>
+    </div>
 
 
 

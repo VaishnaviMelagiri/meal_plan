@@ -148,6 +148,8 @@ async function handleGenerate() {
 
         setStatus('online', 'Ready');
         showToast('✅ Meal plan generated!', 'success', 3000);
+        $('regenerateBtn').style.display = 'inline-flex';
+        loadPlanHistory(kitId);
 
     } catch (err) {
         console.error(err);
@@ -156,6 +158,52 @@ async function handleGenerate() {
     } finally {
         setLoading(false);
     }
+}
+
+function regeneratePlan() {
+    const kitId = $('kitId')?.value || patientProfile?.kit_id;
+    if (!kitId) return;
+    showToast('Generating a new plan...', 'info', 2000);
+    handleGenerate();
+}
+
+async function loadPlanHistory(kitId) {
+    try {
+        const result = await apiCall(`/history/${kitId}`, 'GET');
+        if (!result || !result.plans || !result.plans.length) return;
+        const section = $('historySection');
+        section.classList.remove('hidden');
+        $('historyList').innerHTML = result.plans.map((plan, i) => {
+            const when = plan.generated_at || plan.created_at;
+            const dateStr = when ? new Date(when).toLocaleDateString('en-IN') : 'Saved plan';
+            const diet = plan.diet_type || (plan.patient_summary && plan.patient_summary.diet_type) || '';
+            const calLine = plan.calorie_target ? `${plan.calorie_target} kcal target` : 'Saved plan';
+            return `
+            <div style="border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:8px;cursor:pointer"
+                onclick="loadHistoryPlan(${i})">
+                <div style="font-weight:600;color:var(--text-primary)">
+                    Plan ${i + 1} — ${dateStr}
+                </div>
+                <div style="font-size:0.75rem;color:var(--text-muted);margin-top:4px">
+                    ${calLine}${diet ? ' • ' + diet : ''}
+                </div>
+            </div>`;
+        }).join('');
+        window._planHistory = result.plans;
+    } catch(e) {
+        // History not available — silent fail
+    }
+}
+
+function loadHistoryPlan(index) {
+    const plan = window._planHistory && window._planHistory[index];
+    if (!plan) return;
+    mealPlanData = (plan.meal_plan && plan.meal_plan.day_1) ? plan.meal_plan : { day_1: plan.meal_plan };
+    window.calorieTarget = plan.calorie_target || null;
+    window.macroTargets = plan.macro_targets || null;
+    renderDay('day_1');
+    const when = plan.generated_at || plan.created_at;
+    showToast(`Loaded plan from ${when ? new Date(when).toLocaleDateString('en-IN') : 'history'}`, 'success', 3000);
 }
 
 /**

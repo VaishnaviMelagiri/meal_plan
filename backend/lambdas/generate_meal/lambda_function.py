@@ -787,11 +787,18 @@ def _save_meal_plan_to_db(kit_id: str, patient: dict, meal_plan: dict):
         from decimal import Decimal
         
         timestamp = datetime.utcnow().isoformat()
-        
+
+        # Targets for history display / restore
+        calorie_target, _weight_note, macro_targets = _calculate_calorie_target(patient)
+
         # We need to convert floats to Decimals for DynamoDB
         item_data = {
             "kit_id": kit_id,
             "created_at": timestamp,
+            "generated_at": timestamp,
+            "diet_type": patient.get("diet_type", ""),
+            "calorie_target": calorie_target,
+            "macro_targets": macro_targets,
             "patient_summary": {
                 "name": patient.get("name", ""),
                 "diet_type": patient.get("diet_type", ""),
