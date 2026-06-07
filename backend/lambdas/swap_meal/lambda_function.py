@@ -22,39 +22,72 @@ bedrock = boto3.client("bedrock-runtime")
 DATA_BUCKET = os.environ.get("DATA_BUCKET", "nutrigenie-data")
 LLM_MODEL_ID = os.environ.get("LLM_MODEL_ID", "amazon.nova-micro-v1:0")
 RECIPES_TABLE = os.environ.get("RECIPES_TABLE", "NutriGenieCustomRecipes")
-GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '')
 
 
 def _call_bedrock(prompt: str) -> str:
-    if GEMINI_API_KEY:
-        import urllib.request
-        url = f'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}'
-        payload = json.dumps({
-            'contents': [{'parts': [{'text': prompt}]}],
-            'generationConfig': {'maxOutputTokens': 5000, 'temperature': 0.7}
-        }).encode()
-        req = urllib.request.Request(url, data=payload,
-            headers={'Content-Type': 'application/json'})
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            result = json.loads(resp.read())
-            return result['candidates'][0]['content']['parts'][0]['text']
-    elif 'titan' in LLM_MODEL_ID.lower():
-        body = json.dumps({
-            'inputText': prompt,
-            'textGenerationConfig': {'maxTokenCount': 4096, 'temperature': 0.7, 'topP': 0.9}
-        })
-        response = bedrock.invoke_model(
-            modelId=LLM_MODEL_ID, contentType='application/json',
-            accept='application/json', body=body)
-        result = json.loads(response['body'].read())
-        return result['results'][0]['outputText']
-    else:
-        response = bedrock.converse(
-            modelId=LLM_MODEL_ID,
-            messages=[{'role': 'user', 'content': [{'text': prompt}]}],
-            inferenceConfig={'maxTokens': 5000, 'temperature': 0.7, 'topP': 0.9}
-        )
-        return response['output']['message']['content'][0]['text']
+    """
+    LLM routing:
+    1. Groq Llama-3.1-8b-instant (testing — set GROQ_API_KEY)
+    2. OpenAI GPT-3.5-turbo (testing — set OPENAI_API_KEY)
+    3. AWS Bedrock Nova Micro (production — default)
+    """
+    import urllib.request
+
+    # 1. Groq — fast, free tier
+    groq_key = os.environ.get('GROQ_API_KEY', '')
+    if groq_key:
+        try:
+            payload = json.dumps({
+                'model': 'llama-3.1-8b-instant',
+                'messages': [{'role': 'user', 'content': prompt}],
+                'max_tokens': 4000,
+                'temperature': 0.7
+            }).encode()
+            req = urllib.request.Request(
+                'https://api.groq.com/openai/v1/chat/completions',
+                data=payload,
+                headers={
+                    'Content-Type': 'application/json',
+                    'Authorization': f'Bearer {groq_key}'
+                }
+            )
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                result = json.loads(resp.read())
+                return result['choices'][0]['message']['content']
+        except Exception as e:
+            logger.warning(f'Groq failed: {e}, falling to OpenAI/Bedrock')
+
+    # 2. OpenAI — for testing
+    openai_key = os.environ.get('OPENAI_API_KEY', '')
+    if openai_key:
+        try:
+            payload = json.dumps({
+                'model': 'gpt-3.5-turbo',
+                'messages': [{'role': 'user', 'content': prompt}],
+                'max_tokens': 4000,
+                'temperature': 0.7
+            }).encode()
+            req = urllib.request.Request(
+                'https://api.openai.com/v1/chat/completions',
+                data=payload,
+                headers={
+                    'Content-Type': 'application/json',
+                    'Authorization': f'Bearer {openai_key}'
+                }
+            )
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                result = json.loads(resp.read())
+                return result['choices'][0]['message']['content']
+        except Exception as e:
+            logger.warning(f'OpenAI failed: {e}, falling to Bedrock')
+
+    # 3. AWS Bedrock — production
+    response = bedrock.converse(
+        modelId=LLM_MODEL_ID,
+        messages=[{'role': 'user', 'content': [{'text': prompt}]}],
+        inferenceConfig={'maxTokens': 5000, 'temperature': 0.7, 'topP': 0.9}
+    )
+    return response['output']['message']['content'][0]['text']
 
 
 def lambda_handler(event, context):

@@ -1,0 +1,96 @@
+Ollama failed: HTTP Error 500: Internal Server Error, falling through to Gemini/Bedrock
+Bedrock invocation failed: '>=' not supported between instances of 'MagicMock' and 'int'
+Traceback (most recent call last):
+  File "/home/vaishnavi/Downloads/meal-plan-generator-internship-main/backend/lambdas/generate_meal/lambda_function.py", line 579, in _generate_meal_plan
+    if json_start >= 0 and json_end > json_start:
+       ^^^^^^^^^^^^^^^
+TypeError: '>=' not supported between instances of 'MagicMock' and 'int'
+Ollama failed: Remote end closed connection without response, falling through to Gemini/Bedrock
+Bedrock invocation failed: '>=' not supported between instances of 'MagicMock' and 'int'
+Traceback (most recent call last):
+  File "/home/vaishnavi/Downloads/meal-plan-generator-internship-main/backend/lambdas/generate_meal/lambda_function.py", line 579, in _generate_meal_plan
+    if json_start >= 0 and json_end > json_start:
+       ^^^^^^^^^^^^^^^
+TypeError: '>=' not supported between instances of 'MagicMock' and 'int'
+NutriGenie — Local Test with Ollama
+Requires: ollama serve running in another terminal
+
+
+============================================================
+Testing: IOM_KIT001
+============================================================
+Patient: Veg, BMI 16.61, Female, 36y
+Product: GutHeal
+Yes foods (26): Oats, Jowar, Buckwheat, Quinoa, White rice...
+Avoid foods: 87 items
+
+Calorie target: 1964 kcal
+Macros: Protein 98g | Carbs 270g | Fat 54g | Fiber 20g
+
+Loaded 164 clean IFCT items
+Calling Ollama (llama3.2:3b)... this may take 30-60 seconds
+✅ LLM generation SUCCESS
+
+  breakfast: Oats Porridge with Curcumin
+    Ingredients: Oats, Potato, Ghee
+    Calories: 35 kcal | Protein: 0.8g | Carbs: 7.4g | Fat: 0.5g
+
+  mid_morning_snack: Fresh Blueberry with Raisins
+    Ingredients: Blueberry, Raisins
+    Calories: 76 kcal | Protein: 0.6g | Carbs: 17.8g | Fat: 0.5g
+
+  lunch: Jowar with Potato and Cauliflower and Ghee
+    Ingredients: Jowar, Potato, Cauliflower, Ghee
+    Calories: 390 kcal | Protein: 11.2g | Carbs: 79.6g | Fat: 2.1g
+
+  evening_snack: Cherry with Raisins
+    Ingredients: Cherry, Raisins
+    Calories: 61 kcal | Protein: 0.5g | Carbs: 14.3g | Fat: 0.4g
+
+  dinner: Buckwheat Khichdi with Cauliflower and Ghee
+    Ingredients: Buckwheat, Cauliflower, Cassava, Ghee
+    Calories: 398 kcal | Protein: 12.3g | Carbs: 75.4g | Fat: 8.0g
+
+Daily totals: {'calories': 960, 'protein_g': 25.4, 'carbs_g': 194.5, 'fat_g': 11.5, 'fiber_g': 24.200000000000003}
+
+============================================================
+Testing: IOM_KIT_SENS
+============================================================
+Patient: Pescatarian (Fish), BMI 21, Male, 57y
+Product: SEnS
+Yes foods (50): Quinoa, Peas, Moong, Jowar, White rice...
+Avoid foods: 82 items
+
+Calorie target: 1816 kcal
+Macros: Protein 113g | Carbs 227g | Fat 50g | Fiber 30g
+
+Loaded 164 clean IFCT items
+Calling Ollama (llama3.2:3b)... this may take 30-60 seconds
+✅ LLM generation SUCCESS
+
+  breakfast: Quinoa Porridge with Curcumin
+    Ingredients: Quinoa, Tomato, Ghee
+    Calories: 263 kcal | Protein: 10.5g | Carbs: 42.9g | Fat: 2.1g
+
+  mid_morning_snack: Fresh Kiwi with Pistachios
+    Ingredients: Kiwi, Pistachios
+    Calories: 202 kcal | Protein: 6.1g | Carbs: 21.6g | Fat: 11.8g
+
+  lunch: Peas with Tomato and Oyster mushroom and Ghee
+    Ingredients: Peas, Tomato, Oyster mushroom, Ghee
+    Calories: 449 kcal | Protein: 31.8g | Carbs: 68.7g | Fat: 3.2g
+
+  evening_snack: Mackerel preparation with Curcumin
+    Ingredients: Mackerel, Asparagus
+    Calories: 213 kcal | Protein: 19.5g | Carbs: 1.6g | Fat: 13.9g
+
+  dinner: Moong Khichdi with Oyster mushroom and Ghee
+    Ingredients: Moong, Oyster mushroom, Asparagus, Ghee
+    Calories: 146 kcal | Protein: 11.4g | Carbs: 19.8g | Fat: 0.8g
+
+Daily totals: {'calories': 1273, 'protein_g': 79.30000000000001, 'carbs_g': 154.6, 'fat_g': 31.8, 'fiber_g': 82.1}
+
+============================================================
+Test complete.
+For production: set GEMINI_API_KEY or AWS Bedrock credentials
+============================================================

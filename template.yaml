@@ -15,7 +15,8 @@ Globals:
         LLM_MODEL_ID: amazon.nova-micro-v1:0
         MEAL_PLANS_TABLE: !Ref MealPlansTable
         RECIPES_TABLE: !Ref CustomRecipesTable
-        ANTHROPIC_API_KEY: ''
+        OPENAI_API_KEY: ''
+        GROQ_API_KEY: ''
 
 Resources:
 
@@ -131,31 +132,6 @@ Resources:
           Type: Api
           Properties:
             Path: /meal
-            Method: POST
-            RestApiId: !Ref NutriGenieApi
-
-  SwapMealFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      FunctionName: nutrigenie-swap-meal
-      CodeUri: backend/lambdas/swap_meal/
-      Handler: lambda_function.lambda_handler
-      MemorySize: 512
-      Timeout: 60
-      Policies:
-        - S3ReadPolicy:
-            BucketName: !Ref DataBucket
-        - Statement:
-            - Effect: Allow
-              Action:
-                - bedrock:InvokeModel
-                - bedrock:Converse
-              Resource: '*'
-      Events:
-        SwapMeal:
-          Type: Api
-          Properties:
-            Path: /swap
             Method: POST
             RestApiId: !Ref NutriGenieApi
 

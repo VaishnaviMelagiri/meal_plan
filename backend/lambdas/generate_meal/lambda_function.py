@@ -25,10 +25,83 @@ DATA_BUCKET = os.environ.get("DATA_BUCKET", "nutrigenie-data")
 LLM_MODEL_ID = os.environ.get("LLM_MODEL_ID", "amazon.nova-micro-v1:0")
 MEAL_PLANS_TABLE = os.environ.get("MEAL_PLANS_TABLE", "NutriGenieMealPlans")
 RECIPES_TABLE = os.environ.get("RECIPES_TABLE", "NutriGenieCustomRecipes")
-GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '')
 
 # Cache for nutrition data (persists across warm Lambda invocations)
 _nutrition_cache = {"data": None}
+
+# Hardcoded USDA/ICMR per-100g values — fallback when a food is missing from the
+# IFCT dataset. Mirrors the frontend NUTRITION_DB so backend and UI agree.
+NUTRITION_DB = {
+    # Grains & Pulses
+    "Oats":            {"calories": 389, "protein_g": 16.9, "carbs_g": 66.3, "fat_g": 6.9,   "fiber_g": 10.6},
+    "Jowar":           {"calories": 329, "protein_g": 11.3, "carbs_g": 72.1, "fat_g": 3.5,   "fiber_g": 6.3},
+    "Buckwheat":       {"calories": 343, "protein_g": 13.3, "carbs_g": 71.5, "fat_g": 3.4,   "fiber_g": 10.0},
+    "Quinoa":          {"calories": 368, "protein_g": 14.1, "carbs_g": 64.2, "fat_g": 6.1,   "fiber_g": 7.0},
+    "White rice":      {"calories": 365, "protein_g": 7.1,  "carbs_g": 80.4, "fat_g": 0.7,   "fiber_g": 1.3},
+    "Corn":            {"calories": 365, "protein_g": 9.4,  "carbs_g": 74.3, "fat_g": 4.7,   "fiber_g": 7.3},
+    "Tapioca":         {"calories": 160, "protein_g": 0.7,  "carbs_g": 38.1, "fat_g": 0.3,   "fiber_g": 1.8},
+    "Cassava":         {"calories": 160, "protein_g": 1.4,  "carbs_g": 38.1, "fat_g": 0.3,   "fiber_g": 1.8},
+    "Peas":            {"calories": 81,  "protein_g": 5.4,  "carbs_g": 14.5, "fat_g": 0.4,   "fiber_g": 5.1},
+    "Moong":           {"calories": 347, "protein_g": 23.9, "carbs_g": 63.0, "fat_g": 1.2,   "fiber_g": 16.3},
+    # Vegetables
+    "Potato":          {"calories": 77,  "protein_g": 2.0,  "carbs_g": 17.5, "fat_g": 0.1,   "fiber_g": 2.2},
+    "Cauliflower":     {"calories": 25,  "protein_g": 1.9,  "carbs_g": 5.0,  "fat_g": 0.3,   "fiber_g": 2.0},
+    "Capsicum":        {"calories": 27,  "protein_g": 1.0,  "carbs_g": 6.3,  "fat_g": 0.2,   "fiber_g": 2.1},
+    "Cucumber":        {"calories": 15,  "protein_g": 0.7,  "carbs_g": 3.6,  "fat_g": 0.1,   "fiber_g": 0.5},
+    "Tomato":          {"calories": 18,  "protein_g": 0.9,  "carbs_g": 3.9,  "fat_g": 0.2,   "fiber_g": 1.2},
+    "Carrot":          {"calories": 41,  "protein_g": 0.9,  "carbs_g": 9.6,  "fat_g": 0.2,   "fiber_g": 2.8},
+    "Onion":           {"calories": 40,  "protein_g": 1.1,  "carbs_g": 9.3,  "fat_g": 0.1,   "fiber_g": 1.7},
+    "Asparagus":       {"calories": 20,  "protein_g": 2.2,  "carbs_g": 3.9,  "fat_g": 0.1,   "fiber_g": 2.1},
+    "Oyster mushroom": {"calories": 33,  "protein_g": 3.3,  "carbs_g": 6.1,  "fat_g": 0.4,   "fiber_g": 2.3},
+    "Sprout":          {"calories": 30,  "protein_g": 3.0,  "carbs_g": 5.9,  "fat_g": 0.2,   "fiber_g": 1.8},
+    "Garlic":          {"calories": 149, "protein_g": 6.4,  "carbs_g": 33.1, "fat_g": 0.5,   "fiber_g": 2.1},
+    # Fruits
+    "Blueberry":       {"calories": 57,  "protein_g": 0.7,  "carbs_g": 14.5, "fat_g": 0.3,   "fiber_g": 2.4},
+    "Cherry":          {"calories": 63,  "protein_g": 1.1,  "carbs_g": 16.0, "fat_g": 0.2,   "fiber_g": 2.1},
+    "Kiwi":            {"calories": 61,  "protein_g": 1.1,  "carbs_g": 14.7, "fat_g": 0.5,   "fiber_g": 3.0},
+    "Papaya":          {"calories": 43,  "protein_g": 0.5,  "carbs_g": 10.8, "fat_g": 0.3,   "fiber_g": 1.7},
+    "Apple":           {"calories": 52,  "protein_g": 0.3,  "carbs_g": 13.8, "fat_g": 0.2,   "fiber_g": 2.4},
+    "Pomegranate":     {"calories": 83,  "protein_g": 1.7,  "carbs_g": 18.7, "fat_g": 1.2,   "fiber_g": 4.0},
+    "Raisins":         {"calories": 299, "protein_g": 3.1,  "carbs_g": 79.2, "fat_g": 0.5,   "fiber_g": 3.7},
+    # Nuts & Seeds
+    "Walnuts":         {"calories": 654, "protein_g": 15.2, "carbs_g": 13.7, "fat_g": 65.2,  "fiber_g": 6.7},
+    "Pistachios":      {"calories": 562, "protein_g": 20.2, "carbs_g": 27.5, "fat_g": 45.3,  "fiber_g": 10.3},
+    # Dairy & Substitutes
+    "Ghee":            {"calories": 900, "protein_g": 0.0,  "carbs_g": 0.0,  "fat_g": 99.8,  "fiber_g": 0.0},
+    "Tofu":            {"calories": 76,  "protein_g": 8.1,  "carbs_g": 1.9,  "fat_g": 4.8,   "fiber_g": 0.3},
+    "Soy drink":       {"calories": 54,  "protein_g": 3.3,  "carbs_g": 6.3,  "fat_g": 1.8,   "fiber_g": 0.5},
+    "Coconut milk":    {"calories": 230, "protein_g": 2.3,  "carbs_g": 6.0,  "fat_g": 23.8,  "fiber_g": 2.2},
+    # Fish
+    "Mackerel":        {"calories": 205, "protein_g": 18.6, "carbs_g": 0.0,  "fat_g": 13.9,  "fiber_g": 0.0},
+    "Sardine":         {"calories": 208, "protein_g": 24.6, "carbs_g": 0.0,  "fat_g": 11.5,  "fiber_g": 0.0},
+    "Herring":         {"calories": 158, "protein_g": 17.9, "carbs_g": 0.0,  "fat_g": 9.0,   "fiber_g": 0.0},
+    "Trout":           {"calories": 148, "protein_g": 20.8, "carbs_g": 0.0,  "fat_g": 6.6,   "fiber_g": 0.0},
+    # Spices
+    "Curcumin":        {"calories": 354, "protein_g": 7.8,  "carbs_g": 64.9, "fat_g": 9.9,   "fiber_g": 21.1},
+    # Others
+    "Honey":           {"calories": 304, "protein_g": 0.3,  "carbs_g": 82.4, "fat_g": 0.0,   "fiber_g": 0.2},
+    "Olive oil":       {"calories": 884, "protein_g": 0.0,  "carbs_g": 0.0,  "fat_g": 100.0, "fiber_g": 0.0},
+    "Soybean oil":     {"calories": 884, "protein_g": 0.0,  "carbs_g": 0.0,  "fat_g": 100.0, "fiber_g": 0.0},
+    "Whey protein":    {"calories": 352, "protein_g": 78.1, "carbs_g": 10.4, "fat_g": 4.2,   "fiber_g": 0.0},
+    "Popcorn":         {"calories": 387, "protein_g": 12.9, "carbs_g": 77.9, "fat_g": 4.5,   "fiber_g": 14.5},
+}
+
+
+def _lookup_nutrition_db(food_name: str):
+    """Fallback nutrition lookup against the hardcoded NUTRITION_DB (USDA/ICMR).
+    Returns a dict shaped like an IFCT entry ({"per_100g": {...}}) or None.
+    Exact name match first, then partial — mirrors the frontend calcNutrition."""
+    if not food_name:
+        return None
+    name = food_name.lower()
+    for key, val in NUTRITION_DB.items():
+        if key.lower() == name:
+            return {"per_100g": val}
+    for key, val in NUTRITION_DB.items():
+        kl = key.lower()
+        if name in kl or kl in name:
+            return {"per_100g": val}
+    return None
 
 
 def lambda_handler(event, context):
@@ -370,35 +443,71 @@ def _calculate_calorie_target(patient: dict) -> tuple:
 
 
 def _call_bedrock(prompt: str) -> str:
-    if GEMINI_API_KEY:
-        import urllib.request
-        url = f'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}'
-        payload = json.dumps({
-            'contents': [{'parts': [{'text': prompt}]}],
-            'generationConfig': {'maxOutputTokens': 5000, 'temperature': 0.7}
-        }).encode()
-        req = urllib.request.Request(url, data=payload,
-            headers={'Content-Type': 'application/json'})
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            result = json.loads(resp.read())
-            return result['candidates'][0]['content']['parts'][0]['text']
-    elif 'titan' in LLM_MODEL_ID.lower():
-        body = json.dumps({
-            'inputText': prompt,
-            'textGenerationConfig': {'maxTokenCount': 4096, 'temperature': 0.7, 'topP': 0.9}
-        })
-        response = bedrock.invoke_model(
-            modelId=LLM_MODEL_ID, contentType='application/json',
-            accept='application/json', body=body)
-        result = json.loads(response['body'].read())
-        return result['results'][0]['outputText']
-    else:
-        response = bedrock.converse(
-            modelId=LLM_MODEL_ID,
-            messages=[{'role': 'user', 'content': [{'text': prompt}]}],
-            inferenceConfig={'maxTokens': 5000, 'temperature': 0.7, 'topP': 0.9}
-        )
-        return response['output']['message']['content'][0]['text']
+    """
+    LLM routing:
+    1. Groq Llama-3.1-8b-instant (testing — set GROQ_API_KEY)
+    2. OpenAI GPT-3.5-turbo (testing — set OPENAI_API_KEY)
+    3. AWS Bedrock Nova Micro (production — default)
+    """
+    import urllib.request
+
+    # 1. Groq — fast, free tier
+    groq_key = os.environ.get('GROQ_API_KEY', '')
+    if groq_key:
+        try:
+            payload = json.dumps({
+                'model': 'llama-3.1-8b-instant',
+                'messages': [{'role': 'user', 'content': prompt}],
+                'max_tokens': 4000,
+                'temperature': 0.7
+            }).encode()
+            url = 'https://api.groq.com/openai/v1/chat/completions'
+            logger.info(f'Groq key prefix: {groq_key[:8]}... URL: {url}')
+            req = urllib.request.Request(
+                url,
+                data=payload,
+                headers={
+                    'Content-Type': 'application/json',
+                    'Authorization': f'Bearer {groq_key}'
+                }
+            )
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                result = json.loads(resp.read())
+                return result['choices'][0]['message']['content']
+        except Exception as e:
+            logger.warning(f'Groq failed: {e}, falling to OpenAI/Bedrock')
+
+    # 2. OpenAI — for testing, free $5 credit, no daily limits
+    openai_key = os.environ.get('OPENAI_API_KEY', '')
+    if openai_key:
+        try:
+            payload = json.dumps({
+                'model': 'gpt-3.5-turbo',
+                'messages': [{'role': 'user', 'content': prompt}],
+                'max_tokens': 4000,
+                'temperature': 0.7
+            }).encode()
+            req = urllib.request.Request(
+                'https://api.openai.com/v1/chat/completions',
+                data=payload,
+                headers={
+                    'Content-Type': 'application/json',
+                    'Authorization': f'Bearer {openai_key}'
+                }
+            )
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                result = json.loads(resp.read())
+                return result['choices'][0]['message']['content']
+        except Exception as e:
+            logger.warning(f'OpenAI failed: {e}, falling to Bedrock')
+
+    # 3. AWS Bedrock — production
+    response = bedrock.converse(
+        modelId=LLM_MODEL_ID,
+        messages=[{'role': 'user', 'content': [{'text': prompt}]}],
+        inferenceConfig={'maxTokens': 5000, 'temperature': 0.7, 'topP': 0.9}
+    )
+    return response['output']['message']['content'][0]['text']
 
 
 def _generate_meal_plan(patient: dict, approved_foods: dict) -> dict:
@@ -461,7 +570,20 @@ OUTPUT: {{"calorie_target":{calorie_target},"day_1":{{"breakfast":{{"name":"","s
         json_start = content.find("{")
         json_end = content.rfind("}") + 1
         if json_start >= 0 and json_end > json_start:
-            meal_plan = json.loads(content[json_start:json_end])
+            raw_json = content[json_start:json_end]
+            try:
+                meal_plan = json.loads(raw_json)
+            except json.JSONDecodeError:
+                # Repair truncated JSON from small models
+                open_braces = raw_json.count('{') - raw_json.count('}')
+                open_brackets = raw_json.count('[') - raw_json.count(']')
+                repaired = raw_json.rstrip(',\n\r\t ') + (']' * max(0, open_brackets)) + ('}' * max(0, open_braces))
+                try:
+                    meal_plan = json.loads(repaired)
+                    logger.info('JSON repaired successfully')
+                except json.JSONDecodeError as e2:
+                    logger.error(f'JSON repair failed: {e2}')
+                    raise
             return meal_plan
 
         logger.error(f"No valid JSON found in LLM response: {content[:200]}")
@@ -598,6 +720,9 @@ def _enrich_with_nutrition(plan: dict, nutrition_data: list) -> dict:
                 nutrition_info = food_lookup.get(food_id)
                 if not nutrition_info:
                     nutrition_info = name_lookup.get(food_name)
+                if not nutrition_info:
+                    # Fallback to hardcoded USDA/ICMR values for foods absent from IFCT
+                    nutrition_info = _lookup_nutrition_db(ing.get("name", ""))
 
                 if nutrition_info:
                     qty = ing.get("quantity_g", 100)
@@ -625,6 +750,30 @@ def _enrich_with_nutrition(plan: dict, nutrition_data: list) -> dict:
             # Nova Micro (USDA/ICMR-trained) is the SOLE source of meal-level nutrition.
             # IFCT name-matching is too unreliable to override these values.
             meal["nutrition_source"] = "LLM"
+
+            # If LLM returned 0 for meal totals, calculate from ingredients
+            if not meal.get('total_calories'):
+                meal['total_calories'] = round(sum(
+                    ing.get('nutrition_per_serving', {}).get('calories', 0)
+                    for ing in meal.get('ingredients', [])
+                ))
+                meal['protein_g'] = round(sum(
+                    ing.get('nutrition_per_serving', {}).get('protein_g', 0)
+                    for ing in meal.get('ingredients', [])
+                ), 1)
+                meal['carbs_g'] = round(sum(
+                    ing.get('nutrition_per_serving', {}).get('carbs_g', 0)
+                    for ing in meal.get('ingredients', [])
+                ), 1)
+                meal['fat_g'] = round(sum(
+                    ing.get('nutrition_per_serving', {}).get('fat_g', 0)
+                    for ing in meal.get('ingredients', [])
+                ), 1)
+                meal['fiber_g'] = round(sum(
+                    ing.get('nutrition_per_serving', {}).get('fiber_g', 0)
+                    for ing in meal.get('ingredients', [])
+                ), 1)
+                meal['nutrition_source'] = 'USDA_calculated'
 
             # Accumulate daily totals
             daily_totals["calories"] += meal.get("total_calories", 0)

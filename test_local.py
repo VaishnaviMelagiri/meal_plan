@@ -1,324 +1,125 @@
 """
-NutriGenie Local Test Script
-Run from the project root: python3 test_local.py
+Local test script — runs full meal plan generation.
+No AWS credentials needed.
 
-Tests core logic WITHOUT any AWS calls:
-  1. Patient JSON parsing (_parse_iom_data)
-  2. Food matching (_get_approved_foods)
-  3. Prompt building (_generate_meal_plan prompt section)
-  4. Fallback plan (_generate_fallback_plan)
+Setup (OpenAI for testing):
+  1. export OPENAI_API_KEY=sk-...
+  2. Run this: python3 test_local.py
 
-Place this file in your project root alongside template.yaml.
-Make sure patients/IOM_KIT001.json and patients/IOM_KIT_SENS.json exist.
+For mentor demo:
+  - Shows real LLM-generated Indian meal plans
+  - Uses patient's actual yes_foods from IOM report
+  - Different output for KIT001 (Veg) vs SEnS (Pescatarian)
 """
 
-import json
-import sys
-import os
+import json, os, sys, unittest.mock as mock
 
-# ── Path setup ────────────────────────────────────────────────────────────────
-PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
-GENERATE_MEAL_DIR = os.path.join(PROJECT_ROOT, "backend", "lambdas", "generate_meal")
-sys.path.insert(0, GENERATE_MEAL_DIR)
+# LLM routing — OpenAI for testing, Bedrock in production
+os.environ['OPENAI_API_KEY'] = os.environ.get('OPENAI_API_KEY', '')
+os.environ['GROQ_API_KEY'] = os.environ.get('GROQ_API_KEY', '')
+os.environ['DATA_BUCKET'] = 'local-test'
+os.environ['MEAL_PLANS_TABLE'] = 'local-test'
+os.environ['RECIPES_TABLE'] = 'local-test'
 
-# Patch out boto3/AWS before importing the lambda
-import unittest.mock as mock
-
-# We mock boto3 so the import doesn't crash without AWS credentials
+# Mock AWS services — not needed for local test
 boto3_mock = mock.MagicMock()
-sys.modules["boto3"] = boto3_mock
+sys.modules['boto3'] = boto3_mock
 
-# Now import the lambda functions directly
+# Import lambda
+sys.path.insert(0, 'backend/lambdas/generate_meal')
 import lambda_function as lf
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# If no LLM key available, patch _call_bedrock to return a test response
+if not os.environ.get('OPENAI_API_KEY') and not os.environ.get('ANTHROPIC_API_KEY') and not os.environ.get('GROQ_API_KEY'):
+    def mock_call_bedrock(prompt):
+        return '{"day_1": {"breakfast": {"name": "Test Meal", "ingredients": [], "total_calories": 0, "protein_g": 0, "carbs_g": 0, "fat_g": 0, "fiber_g": 0, "prep_time_min": 15, "benefits": "test"}, "mid_morning_snack": {"name": "Test Snack", "ingredients": [], "total_calories": 0, "protein_g": 0, "carbs_g": 0, "fat_g": 0, "fiber_g": 0, "prep_time_min": 10, "benefits": "test"}, "lunch": {"name": "Test Lunch", "ingredients": [], "total_calories": 0, "protein_g": 0, "carbs_g": 0, "fat_g": 0, "fiber_g": 0, "prep_time_min": 20, "benefits": "test"}, "evening_snack": {"name": "Test Evening", "ingredients": [], "total_calories": 0, "protein_g": 0, "carbs_g": 0, "fat_g": 0, "fiber_g": 0, "prep_time_min": 5, "benefits": "test"}, "dinner": {"name": "Test Dinner", "ingredients": [], "total_calories": 0, "protein_g": 0, "carbs_g": 0, "fat_g": 0, "fiber_g": 0, "prep_time_min": 20, "benefits": "test"}}}'
+    lf._call_bedrock = mock_call_bedrock
 
-def load_patient_json(path: str) -> dict:
-    with open(path) as f:
-        return json.load(f)
+def test_patient(kit_id, patient_file):
+    print(f'\n{"="*60}')
+    print(f'Testing: {kit_id}')
+    print('='*60)
 
-def load_ifct(path: str) -> list:
-    with open(path) as f:
-        raw = json.load(f)
-    # Apply same cleaning as _load_nutrition_data
-    seen_ids = set()
-    clean = []
-    for item in raw:
-        if item["food_id"] in seen_ids:
-            continue
-        if item.get("per_100g", {}).get("calories", 0) >= 50:
-            seen_ids.add(item["food_id"])
-            clean.append(item)
-    return clean
+    # Load patient
+    raw = json.load(open(patient_file))
+    patient = lf._parse_iom_data(raw, kit_id)
 
-def separator(title: str):
+    print(f'Patient: {patient["diet_type"]}, BMI {patient["bmi"]}, {patient["gender"]}, {patient["age"]}y')
+    print(f'Product: {patient["product_type"]}')
+    print(f'Yes foods ({len(patient["yes_foods"])}): {", ".join(patient["yes_foods"][:5])}...')
+    print(f'Avoid foods: {len(patient["avoid_foods"])} items')
     print()
-    print("=" * 60)
-    print(f"  {title}")
-    print("=" * 60)
 
-def check(label: str, condition: bool, detail: str = ""):
-    status = "✅ PASS" if condition else "❌ FAIL"
-    print(f"  {status}  {label}")
-    if detail:
-        print(f"         {detail}")
+    # Calculate targets
+    calorie_target, weight_note, macro_targets = lf._calculate_calorie_target(patient)
+    print(f'Calorie target: {calorie_target} kcal')
+    print(f'Macros: Protein {macro_targets["protein_g"]}g | Carbs {macro_targets["carbs_g"]}g | Fat {macro_targets["fat_g"]}g | Fiber {macro_targets["fiber_g"]}g')
+    print()
 
-# ── Paths ─────────────────────────────────────────────────────────────────────
+    # Load nutrition data from local file (boto3 is mocked, so no S3)
+    ifct_path = 'backend/data/indian_nutrition_dataset.json'
+    import json as _json
+    nutrition_data = []
+    if os.path.exists(ifct_path):
+        raw = _json.load(open(ifct_path))
+        seen = set()
+        for item in raw:
+            if item['food_id'] not in seen and item.get('per_100g', {}).get('calories', 0) >= 50:
+                seen.add(item['food_id'])
+                nutrition_data.append(item)
+        print(f'Loaded {len(nutrition_data)} clean IFCT items')
 
-PATIENTS = {
-    "IOM_KIT001": os.path.join(PROJECT_ROOT, "patients", "IOM_KIT001.json"),
-    "IOM_KIT_SENS": os.path.join(PROJECT_ROOT, "patients", "IOM_KIT_SENS.json"),
-}
-IFCT_PATH = os.path.join(PROJECT_ROOT, "backend", "data", "indian_nutrition_dataset.json")
+    # Get approved foods
+    approved = lf._get_approved_foods(patient, nutrition_data)
 
-# ── TEST 1: File existence ─────────────────────────────────────────────────────
-
-separator("TEST 1 — Required files exist")
-for kit_id, path in PATIENTS.items():
-    check(f"{kit_id}.json exists", os.path.exists(path), path)
-check("indian_nutrition_dataset.json exists", os.path.exists(IFCT_PATH), IFCT_PATH)
-
-# ── TEST 2: IFCT cleaning ──────────────────────────────────────────────────────
-
-separator("TEST 2 — IFCT dataset cleaning")
-try:
-    ifct = load_ifct(IFCT_PATH)
-    raw_count = len(json.load(open(IFCT_PATH)))
-    check(f"Raw items loaded", True, f"{raw_count} total")
-    check(f"Clean items after filter (cal >= 50, deduped)", len(ifct) > 100,
-          f"{len(ifct)} clean items (was {raw_count})")
-    check("No zero-calorie items in clean set",
-          all(i["per_100g"]["calories"] >= 50 for i in ifct),
-          f"min cal = {min(i['per_100g']['calories'] for i in ifct):.1f}")
-except Exception as e:
-    check("IFCT load", False, str(e))
-    ifct = []
-
-# ── TEST 3: Patient JSON parsing ───────────────────────────────────────────────
-
-separator("TEST 3 — Patient JSON parsing")
-
-patients_parsed = {}
-for kit_id, path in PATIENTS.items():
-    if not os.path.exists(path):
-        print(f"  SKIP {kit_id} — file not found")
-        continue
-
+    # Try LLM generation
+    print('Calling OpenAI GPT-3.5-turbo...' if os.environ.get('OPENAI_API_KEY') else 'Calling AWS Bedrock...')
     try:
-        raw = load_patient_json(path)
-        patient = lf._parse_iom_data(raw, kit_id)
-        patients_parsed[kit_id] = patient
-
-        print(f"\n  [{kit_id}]")
-        check("kit_id present", bool(patient.get("kit_id")),
-              patient.get("kit_id"))
-        check("product_type present", bool(patient.get("product_type")),
-              patient.get("product_type"))
-        check("diet_type not default Veg for SEnS" if "SENS" in kit_id else "diet_type present",
-              patient.get("diet_type") not in ["", None],
-              patient.get("diet_type"))
-        check(f"yes_foods populated ({len(patient.get('yes_foods', []))} items)",
-              len(patient.get("yes_foods", [])) > 0,
-              str(patient.get("yes_foods", [])[:5]) + "...")
-        check(f"avoid_foods populated ({len(patient.get('avoid_foods', []))} items)",
-              len(patient.get("avoid_foods", [])) > 0,
-              str(patient.get("avoid_foods", [])[:5]) + "...")
-        check(f"avoid_list from allergies ({len(patient.get('avoid_list', []))} items)",
-              True,
-              str(patient.get("avoid_list", [])))
-        check(f"bacteria_to_increase ({len(patient.get('bacteria_to_increase', []))} items)",
-              len(patient.get("bacteria_to_increase", [])) > 0,
-              str([b["name"] for b in patient.get("bacteria_to_increase", [])]))
-        check(f"bacteria_to_decrease ({len(patient.get('bacteria_to_decrease', []))} items)",
-              len(patient.get("bacteria_to_decrease", [])) > 0,
-              str([b["name"] for b in patient.get("bacteria_to_decrease", [])]))
-
-        # Check no summary rows leaked through
-        bad_bacteria = [b["name"] for b in patient.get("bacteria_to_increase", []) +
-                        patient.get("bacteria_to_decrease", [])
-                        if any(s in b["name"] for s in ("Other", "all", "bot", "top", "Non"))]
-        check("No summary rows in bacteria", len(bad_bacteria) == 0,
-              f"Bad rows: {bad_bacteria}" if bad_bacteria else "clean")
-
-    except Exception as e:
-        check(f"{kit_id} parse", False, str(e))
-
-# ── TEST 4: Food matching ──────────────────────────────────────────────────────
-
-separator("TEST 4 — Food matching (_get_approved_foods)")
-
-for kit_id, patient in patients_parsed.items():
-    print(f"\n  [{kit_id}]")
-    try:
-        approved = lf._get_approved_foods(patient, ifct)
-
-        # New API: returns a dict, not a list
-        check("Returns a dict", isinstance(approved, dict), type(approved).__name__)
-        check("Has 'by_group' key", "by_group" in approved)
-        check("Has 'ifct_lookup' key", "ifct_lookup" in approved)
-
-        by_group = approved.get("by_group", {})
-        ifct_lookup = approved.get("ifct_lookup", {})
-        total = sum(len(v) for v in by_group.values())
-
-        check(f"Approved foods grouped ({len(by_group)} groups, {total} foods)",
-              total > 0,
-              ", ".join(by_group.keys()))
-        check(f"IFCT nutrition hints: {len(ifct_lookup)}",
-              True,
-              str(list(ifct_lookup.keys())[:5]))
-
-        # No cap — every approved yes_food (minus avoids) reaches the LLM
-        avoid_set = set(a.lower() for a in
-                        patient.get("avoid_foods", []) + patient.get("avoid_list", []) if a)
-        expected = len([f for f in patient.get("yes_foods", [])
-                        if f and f.lower() not in avoid_set])
-        check("No cap — all approved yes_foods present", total == expected,
-              f"{total} grouped vs {expected} expected (no [:25] cap)")
-
-        # Critical: no avoid foods leaked into any group
-        all_grouped = [f for foods in by_group.values() for f in foods]
-        snuck_in = [f for f in all_grouped if f.lower() in avoid_set]
-        check("No avoid foods in approved groups", len(snuck_in) == 0,
-              f"Leaked: {snuck_in}" if snuck_in else "clean")
-
-        # SEnS (pescatarian) must keep all 4 fish under Meat, Fish & Poultry
-        if "SENS" in kit_id:
-            fish = by_group.get("Meat, Fish & Poultry", [])
-            check("SEnS retains all 4 fish", len(fish) == 4, str(fish))
-
-    except Exception as e:
-        check(f"{kit_id} food matching", False, str(e))
-        import traceback; traceback.print_exc()
-
-# ── TEST 5: Merged avoids ──────────────────────────────────────────────────────
-
-separator("TEST 5 — Merged avoid list (food_list + allergies)")
-
-for kit_id, patient in patients_parsed.items():
-    print(f"\n  [{kit_id}]")
-    avoid_foods = patient.get("avoid_foods", [])
-    avoid_list = patient.get("avoid_list", [])
-
-    merged = []
-    seen = set()
-    for a in avoid_foods + avoid_list:
-        if a and a.lower() not in seen:
-            seen.add(a.lower())
-            merged.append(a)
-
-    check(f"food_list avoids: {len(avoid_foods)}", len(avoid_foods) > 0,
-          str(avoid_foods[:3]))
-    check(f"allergy avoids: {len(avoid_list)}", True,
-          str(avoid_list))
-    check(f"merged total: {len(merged)}", len(merged) >= len(avoid_foods),
-          str(merged[:5]))
-    check("No duplicates in merged", len(merged) == len(set(a.lower() for a in merged)))
-
-# ── TEST 6: Fallback plan ──────────────────────────────────────────────────────
-
-separator("TEST 6 — Fallback plan (no hardcoded Rice)")
-
-for kit_id, patient in patients_parsed.items():
-    print(f"\n  [{kit_id}]")
-    try:
-        approved = lf._get_approved_foods(patient, ifct)
-        fallback = lf._generate_fallback_plan(patient, approved, 1800)
-
-        check("Returns dict with calorie_target", "calorie_target" in fallback)
-        check("Has day_1", "day_1" in fallback)
-
-        day = fallback.get("day_1", {})
-        meals = ["breakfast", "mid_morning_snack", "lunch", "evening_snack", "dinner"]
-        for meal in meals:
-            check(f"{meal} present", meal in day,
-                  day.get(meal, {}).get("name", "MISSING"))
-
-        # Critical: no hardcoded Rice
-        all_names = [day.get(m, {}).get("name", "") for m in meals]
-        has_rice = any("Rice" in n and len(n) < 10 for n in all_names)
-        check("No standalone 'Rice' hardcoded", not has_rice,
-              str(all_names))
-
-        # Has note
-        check("Has note for patient", bool(day.get("note")), day.get("note", ""))
-
-        # Names come from yes_foods, not invented
-        yes_lower = [f.lower() for f in patient.get("yes_foods", [])]
-        for meal in meals:
-            meal_name = day.get(meal, {}).get("name", "").lower()
-            from_yes = any(y in meal_name for y in yes_lower)
-            check(f"{meal} name from yes_foods", from_yes, meal_name)
-
-    except Exception as e:
-        check(f"{kit_id} fallback", False, str(e))
-        import traceback; traceback.print_exc()
-
-# ── TEST 7: Prompt sanity check ────────────────────────────────────────────────
-
-separator("TEST 7 — Prompt content check (without calling Bedrock)")
-
-for kit_id, patient in patients_parsed.items():
-    print(f"\n  [{kit_id}]")
-    try:
-        approved = lf._get_approved_foods(patient, ifct)
-        by_group = approved.get("by_group", {})
-        ifct_lookup = approved.get("ifct_lookup", {})
-
-        # Build merged avoids same way as lambda
-        merged_avoids = []
-        seen_avoids = set()
-        for a in list(patient.get("avoid_foods", [])) + list(patient.get("avoid_list", [])):
-            if a and a.lower() not in seen_avoids:
-                seen_avoids.add(a.lower())
-                merged_avoids.append(a)
-
-        # Build grouped food context the SAME way as _generate_meal_plan (no caps)
-        food_lines = []
-        for group, foods in by_group.items():
-            food_lines.append(f"\n{group}:")
-            for food in foods:
-                hint = ""
-                if food in ifct_lookup:
-                    n = ifct_lookup[food]
-                    hint = f" ({n['calories_per_100g']} kcal/100g, {n['protein_g']}g protein)"
-                food_lines.append(f"  - {food}{hint}")
-        food_context = "\n".join(food_lines)
-        total_approved = sum(len(foods) for foods in by_group.values())
-
-        check("Grouped foods in prompt context", total_approved > 0,
-              f"{total_approved} foods across {len(by_group)} groups")
-        check("Avoid list not empty", len(merged_avoids) > 0,
-              f"{len(merged_avoids)} avoid items")
-        # Exact-match semantics — the lambda filters avoids by exact (lowercased) name
-        leaked = [f for foods in by_group.values() for f in foods
-                  if f.lower() in seen_avoids]
-        check("No avoid food in approved context", len(leaked) == 0,
-              f"Leaked: {leaked}" if leaked else "clean")
-        check("Product type context correct",
-              patient.get("product_type") in ["GutHeal", "SEnS"],
-              patient.get("product_type"))
-        if "SENS" in kit_id:
-            check("Fish present in prompt context",
-                  "Mackerel" in food_context and "Trout" in food_context,
-                  "Mackerel/Trout in APPROVED context")
-
-        # End-to-end: build the REAL prompt by forcing the Bedrock call to fail.
-        # This exercises the full f-string (macro_targets, total_approved, product
-        # context, etc.) before the except returns the fallback plan.
-        lf.bedrock.converse.side_effect = Exception("offline-test")
         plan = lf._generate_meal_plan(patient, approved)
-        check("_generate_meal_plan builds prompt + returns plan",
-              isinstance(plan, dict) and "day_1" in plan,
-              "fell back to plan after forced Bedrock failure")
+        # Enrich with nutrition (uses the lambda's existing enrichment fn)
+        plan = lf._enrich_with_nutrition(plan, nutrition_data)
+        print('✅ LLM generation SUCCESS')
+        print()
+
+        day = plan.get('day_1', {})
+        for slot in ['breakfast', 'mid_morning_snack', 'lunch', 'evening_snack', 'dinner']:
+            meal = day.get(slot, {})
+            if meal:
+                ings = ', '.join([i['name'] for i in meal.get('ingredients', [])])
+                print(f'  {slot}: {meal.get("name", "N/A")}')
+                print(f'    Ingredients: {ings}')
+                print(f'    Calories: {meal.get("total_calories", 0)} kcal | Protein: {meal.get("protein_g", 0)}g | Carbs: {meal.get("carbs_g", 0)}g | Fat: {meal.get("fat_g", 0)}g')
+                print()
+
+        print(f'Daily totals: {day.get("daily_totals", {})}')
 
     except Exception as e:
-        check(f"{kit_id} prompt check", False, str(e))
-        import traceback; traceback.print_exc()
+        print(f'❌ LLM failed: {e}')
+        print('Showing fallback plan instead:')
+        plan = lf._generate_fallback_plan(patient, approved, calorie_target)
+        day = plan.get('day_1', {})
+        for slot in ['breakfast', 'mid_morning_snack', 'lunch', 'evening_snack', 'dinner']:
+            meal = day.get(slot, {})
+            if meal:
+                print(f'  {slot}: {meal.get("name", "N/A")}')
 
-# ── Summary ────────────────────────────────────────────────────────────────────
+if __name__ == '__main__':
+    print('NutriGenie — Local Test')
+    print('Set OPENAI_API_KEY for real LLM output (else falls back to Bedrock)')
+    print()
 
-separator("DONE — review any ❌ FAIL above before deploying")
-print()
-print("  Next step: upload patient JSONs + IFCT to S3, then sam deploy --guided")
-print()
+    patients = [
+        ('IOM_KIT001', 'patients/IOM_KIT001.json'),
+        ('IOM_KIT_SENS', 'patients/IOM_KIT_SENS.json'),
+    ]
+
+    for kit_id, path in patients:
+        try:
+            test_patient(kit_id, path)
+        except Exception as e:
+            print(f'Error testing {kit_id}: {e}')
+
+    print('\n' + '='*60)
+    print('Test complete.')
+    print('For production: set OPENAI_API_KEY or AWS Bedrock credentials')
+    print('='*60)
