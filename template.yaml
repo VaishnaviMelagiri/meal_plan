@@ -15,8 +15,7 @@ Globals:
         LLM_MODEL_ID: amazon.nova-micro-v1:0
         MEAL_PLANS_TABLE: !Ref MealPlansTable
         RECIPES_TABLE: !Ref CustomRecipesTable
-        OPENAI_API_KEY: ''
-        GROQ_API_KEY: ''
+        MISTRAL_API_KEY: ''
 
 Resources:
 

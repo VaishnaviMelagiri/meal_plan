@@ -27,61 +27,36 @@ RECIPES_TABLE = os.environ.get("RECIPES_TABLE", "NutriGenieCustomRecipes")
 def _call_bedrock(prompt: str) -> str:
     """
     LLM routing:
-    1. Groq Llama-3.1-8b-instant (testing — set GROQ_API_KEY)
-    2. OpenAI GPT-3.5-turbo (testing — set OPENAI_API_KEY)
-    3. AWS Bedrock Nova Micro (production — default)
+    1. Mistral Small (testing — set MISTRAL_API_KEY)
+    2. AWS Bedrock Nova Micro (production — default)
     """
     import urllib.request
 
-    # 1. Groq — fast, free tier
-    groq_key = os.environ.get('GROQ_API_KEY', '')
-    if groq_key:
+    # 1. Mistral — fast, free tier
+    mistral_key = os.environ.get('MISTRAL_API_KEY', '')
+    if mistral_key:
         try:
             payload = json.dumps({
-                'model': 'llama-3.1-8b-instant',
+                'model': 'mistral-small-latest',
                 'messages': [{'role': 'user', 'content': prompt}],
                 'max_tokens': 4000,
                 'temperature': 0.7
             }).encode()
             req = urllib.request.Request(
-                'https://api.groq.com/openai/v1/chat/completions',
+                'https://api.mistral.ai/v1/chat/completions',
                 data=payload,
                 headers={
                     'Content-Type': 'application/json',
-                    'Authorization': f'Bearer {groq_key}'
+                    'Authorization': f'Bearer {mistral_key}'
                 }
             )
             with urllib.request.urlopen(req, timeout=60) as resp:
                 result = json.loads(resp.read())
                 return result['choices'][0]['message']['content']
         except Exception as e:
-            logger.warning(f'Groq failed: {e}, falling to OpenAI/Bedrock')
+            logger.warning(f'Mistral failed: {e}, falling to Bedrock')
 
-    # 2. OpenAI — for testing
-    openai_key = os.environ.get('OPENAI_API_KEY', '')
-    if openai_key:
-        try:
-            payload = json.dumps({
-                'model': 'gpt-3.5-turbo',
-                'messages': [{'role': 'user', 'content': prompt}],
-                'max_tokens': 4000,
-                'temperature': 0.7
-            }).encode()
-            req = urllib.request.Request(
-                'https://api.openai.com/v1/chat/completions',
-                data=payload,
-                headers={
-                    'Content-Type': 'application/json',
-                    'Authorization': f'Bearer {openai_key}'
-                }
-            )
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                result = json.loads(resp.read())
-                return result['choices'][0]['message']['content']
-        except Exception as e:
-            logger.warning(f'OpenAI failed: {e}, falling to Bedrock')
-
-    # 3. AWS Bedrock — production
+    # 2. AWS Bedrock — production
     response = bedrock.converse(
         modelId=LLM_MODEL_ID,
         messages=[{'role': 'user', 'content': [{'text': prompt}]}],

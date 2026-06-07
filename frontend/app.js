@@ -61,6 +61,22 @@ const NUTRITION_DB = {
     'Soybean oil':    { cal: 884, pro: 0.0,  carb: 0.0,  fat: 100.0,fib: 0.0  },
     'Whey protein':   { cal: 352, pro: 78.1, carb: 10.4, fat: 4.2,  fib: 0.0  },
     'Popcorn':        { cal: 387, pro: 12.9, carb: 77.9, fat: 4.5,  fib: 14.5 },
+    'Orange juice':     { cal: 45,  pro: 0.7,  carb: 10.4, fat: 0.2,  fib: 0.2  },
+    'Chokeberry':       { cal: 47,  pro: 1.3,  carb: 9.6,  fat: 0.5,  fib: 5.3  },
+    'Kefir':            { cal: 61,  pro: 3.4,  carb: 4.7,  fat: 3.3,  fib: 0.0  },
+    'Psyllium':         { cal: 340, pro: 2.4,  carb: 88.9, fat: 1.0,  fib: 85.7 },
+    'Lady\'s finger':   { cal: 33,  pro: 1.9,  carb: 7.5,  fat: 0.2,  fib: 3.2  },
+    'Ladies finger':    { cal: 33,  pro: 1.9,  carb: 7.5,  fat: 0.2,  fib: 3.2  },
+    'Lady finger':      { cal: 33,  pro: 1.9,  carb: 7.5,  fat: 0.2,  fib: 3.2  },
+    'Okra':             { cal: 33,  pro: 1.9,  carb: 7.5,  fat: 0.2,  fib: 3.2  },
+    'Green peas':       { cal: 81,  pro: 5.4,  carb: 14.5, fat: 0.4,  fib: 5.1  },
+    'Beetroot juice':   { cal: 45,  pro: 1.7,  carb: 9.9,  fat: 0.1,  fib: 2.0  },
+    'Grape fruit juice':{ cal: 38,  pro: 0.5,  carb: 9.2,  fat: 0.1,  fib: 0.1  },
+    'Green tea':        { cal: 1,   pro: 0.2,  carb: 0.0,  fat: 0.0,  fib: 0.0  },
+    'Oolong tea':       { cal: 1,   pro: 0.0,  carb: 0.3,  fat: 0.0,  fib: 0.0  },
+    'Fresh cream':      { cal: 345, pro: 2.8,  carb: 2.8,  fat: 37.0, fib: 0.0  },
+    'Kimchi':           { cal: 15,  pro: 1.1,  carb: 2.4,  fat: 0.5,  fib: 1.6  },
+    'Arrowroot':        { cal: 357, pro: 0.3,  carb: 88.2, fat: 0.1,  fib: 3.4  },
 };
 
 function calcNutrition(ingredients) {
@@ -284,6 +300,13 @@ function renderDay(dayKey) {
     const allMealKeys = Object.keys(day).filter(k => day[k] && typeof day[k] === 'object' && 'total_calories' in day[k]);
     const meals = sortedMealKeys(day, allMealKeys);
     const labels = { breakfast: '🌅 Breakfast', mid_morning_snack: '🍎 Snack', lunch: '☀️ Lunch', evening_snack: '🫖 Tea Time', dinner: '🌙 Dinner' };
+    const defaultTimes = {
+        breakfast: '8:00 AM',
+        mid_morning_snack: '10:30 AM',
+        lunch: '1:00 PM',
+        evening_snack: '4:30 PM',
+        dinner: '8:00 PM'
+    };
 
     let html = '';
     let totals = { cal: 0, pro: 0, carb: 0, fat: 0, fib: 0 };
@@ -317,6 +340,9 @@ function renderDay(dayKey) {
             <div class="meal-content">
                 <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
                     <span class="meal-type${isSideDish ? ' side-type' : ''}">${(window.customLabels && window.customLabels[type]) || labels[type] || type.replace(/_/g, ' ')}</span>
+                    <span style="font-size:0.72rem;color:var(--text-muted);margin-left:8px">
+                        ${defaultTimes[type] || ''}
+                    </span>
                     ${m.prep_time_min ? `<span style="font-size:0.7rem;color:var(--text-muted)">⏱ ${m.prep_time_min}min</span>` : ''}
                 </div>
                 <h3 class="meal-name">${esc(m.name || 'Meal')}</h3>
@@ -343,6 +369,13 @@ function renderDay(dayKey) {
                     <button class="btn-swap-meal btn-add-side" onclick="openAddMealModal('${dayKey}', '${type}')">
                         ➕ Add Side Dish
                     </button>
+                    ${m.nutrition_source === 'usda_calculated' ? `
+                    <button class="btn-swap-meal" onclick="openEditMealModal('${dayKey}','${type}')" style="background:rgba(59,130,246,0.15);color:#3b82f6;border-color:#3b82f6">
+                        ✏️ Edit
+                    </button>
+                    <button class="btn-swap-meal" onclick="deleteMeal('${dayKey}','${type}')" style="background:rgba(239,68,68,0.15);color:#ef4444;border-color:#ef4444">
+                        🗑️ Delete
+                    </button>` : ''}
                 </div>`}
                 ${isSideDish ? `
                 <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
@@ -413,17 +446,53 @@ const MEAL_TYPE_LABELS = {
     dinner: '🌙 Dinner'
 };
 
+function addIngredientRow(name = '', qty = '') {
+    const rows = $('ingRows');
+    if (!rows) return;
+    const div = document.createElement('div');
+    div.className = 'ing-row';
+    div.style.cssText = 'display:flex;gap:8px;margin-bottom:8px';
+    div.innerHTML = `
+        <input type="text" class="modal-input ing-name" placeholder="Ingredient (e.g. Curd)"
+            value="${esc(name)}" oninput="autoCalcNutrition()" style="flex:2">
+        <input type="number" class="modal-input ing-qty" placeholder="g" min="0"
+            value="${qty}" oninput="autoCalcNutrition()" style="flex:1">
+        <button type="button" class="modal-close" title="Remove"
+            onclick="this.parentElement.remove();autoCalcNutrition()" style="flex:0 0 auto">✕</button>`;
+    rows.appendChild(div);
+}
+
+function gatherAddIngredients() {
+    const names = document.querySelectorAll('#ingRows .ing-name');
+    const qtys = document.querySelectorAll('#ingRows .ing-qty');
+    const out = [];
+    names.forEach((n, i) => {
+        const nm = n.value.trim();
+        if (nm) out.push({ name: nm, quantity_g: parseFloat(qtys[i] && qtys[i].value) || 100 });
+    });
+    return out;
+}
+
+function autoCalcNutrition() {
+    const ingredients = gatherAddIngredients();
+    const preview = $('nutritionPreview');
+    if (!ingredients.length) { if (preview) preview.innerHTML = ''; return; }
+    const nutrition = calcNutrition(ingredients);
+    if (preview) preview.innerHTML = `
+        <span style="color:var(--accent);font-size:0.75rem">
+            ${nutrition.calories} kcal | P:${nutrition.protein_g}g | C:${nutrition.carbs_g}g | F:${nutrition.fat_g}g
+        </span>`;
+}
+
 function openAddMealModal(day, mealType) {
     addMealDayTarget = day;
     addMealTypeTarget = mealType || null;
     const friendlyLabel = MEAL_TYPE_LABELS[mealType] || (mealType ? mealType.replace(/_/g, ' ') : '') || '';
     $('addMealType').value = friendlyLabel ? `Side Dish (${friendlyLabel.replace(/^[^\w]*/, '').trim()})` : '';
     $('addMealName').value = '';
-    $('addMealIngredients').value = '';
-    $('addMealCal').value = '0';
-    $('addMealPro').value = '0';
-    $('addMealCarb').value = '0';
-    $('addMealFat').value = '0';
+    $('ingRows').innerHTML = '';
+    addIngredientRow();
+    const _prev = $('nutritionPreview'); if (_prev) _prev.innerHTML = '';
     // Update modal title to show context
     const modalTitle = document.querySelector('#addMealModal .modal-header h3');
     if (modalTitle) modalTitle.textContent = mealType ? `➕ Add Side Dish — ${friendlyLabel}` : '➕ Add Custom Meal';
@@ -440,21 +509,17 @@ function confirmAddMeal() {
     if (!addMealDayTarget) return;
     const type = $('addMealType').value.trim() || 'Custom Meal';
     const name = $('addMealName').value.trim() || 'Unnamed Meal';
-    const ings = $('addMealIngredients').value.split(',').map(i => i.trim()).filter(i => i);
-
-    const cal = parseInt($('addMealCal').value) || 0;
-    const pro = parseInt($('addMealPro').value) || 0;
-    const carb = parseInt($('addMealCarb').value) || 0;
-    const fat = parseInt($('addMealFat').value) || 0;
+    const ingredients = gatherAddIngredients();
+    const nutrition = calcNutrition(ingredients);
 
     const newMeal = {
         name: name,
-        ingredients: ings.map(ing => ({ name: ing, quantity_g: "N/A" })),
-        total_calories: cal,
-        protein_g: pro,
-        carbs_g: carb,
-        fat_g: fat,
-        fiber_g: 0,
+        ingredients: ingredients,
+        total_calories: nutrition.calories,
+        protein_g: nutrition.protein_g,
+        carbs_g: nutrition.carbs_g,
+        fat_g: nutrition.fat_g,
+        fiber_g: nutrition.fiber_g,
         prep_time_min: 5,
         benefits: "✏️ Side dish added by Nutritionist"
     };
@@ -571,6 +636,15 @@ function deleteSideDish(dayKey, mealKey) {
     showToast(`🗑️ Deleted: "${name}"`, 'info');
 }
 
+function deleteMeal(day, mealType) {
+    if (!mealPlanData || !mealPlanData[day]) return;
+    if (!confirm('Remove this meal?')) return;
+    delete mealPlanData[day][mealType];
+    autosavePlan();
+    renderDay(day);
+    showToast('Meal removed.', 'info', 2000);
+}
+
 
 // ═══ PDF Export — built programmatically with jsPDF (no html2canvas, no blank pages) ═══
 function downloadPDF() {
@@ -672,12 +746,16 @@ function downloadPDF() {
             doc.line(LM, y, LM+CW, y); y += 5;
 
             // Profile 2-col grid
+            const ibsLabel = p.product_type === 'SEnS' ? 'Focus' : 'IBS Type';
+            const ibsValue = p.product_type === 'SEnS' ? 'Sleep · Energy · Stress' : ((p.ibs_info && p.ibs_info.subtype) || 'N/A');
+            const sevLabel = p.product_type === 'SEnS' ? 'Product' : 'Severity';
+            const sevValue = p.product_type === 'SEnS' ? 'GUT SEnS' : ((p.ibs_info && p.ibs_info.severity_level) || 'N/A');
             const fields = [
                 ['Kit ID', p.kit_id||'N/A'],   ['Age', p.age||'N/A'],
                 ['Gender', p.gender||'N/A'],   ['BMI', p.bmi||'N/A'],
                 ['Diet', p.diet_type||'Veg'],  ['Location', p.location||'N/A'],
-                ['IBS Type', (p.ibs_info&&p.ibs_info.subtype)||'N/A'],
-                ['Severity', (p.ibs_info&&p.ibs_info.severity_level)||'N/A'],
+                [ibsLabel, ibsValue],
+                [sevLabel, sevValue],
             ];
             const colW = CW / 2;
             const rowH = 7;
@@ -834,15 +912,15 @@ function downloadPDF() {
 
                 // Dish name
                 let cy = y+9;
-                setTxt(9.5, WHITE, true);
+                setTxt(13, WHITE, true);
                 doc.text(nameWrapped, indentX+4, cy);
                 cy += nameWrapped.length*5;
 
                 // Ingredients
-                setTxt(7.5, [107,114,128], true);
+                setTxt(11, [107,114,128], true);
                 doc.text('Ingredients: ', indentX+4, cy);
                 const labelW = doc.getTextWidth('Ingredients: ');
-                setTxt(7.5, MUTED, false);
+                setTxt(11, MUTED, false);
                 // first line beside label
                 if (ingWrapped.length>0) doc.text(ingWrapped[0], indentX+4+labelW, cy);
                 for (let li=1; li<ingWrapped.length; li++) {
@@ -865,7 +943,7 @@ function downloadPDF() {
                     mx+=pw+2;
                 });
 
-                y += cardH+3;
+                y += cardH+7;
             });
 
             // Daily totals
@@ -881,7 +959,12 @@ function downloadPDF() {
             setTxt(8, ACCENT, true);
             doc.text('Daily Totals  vs  NIN RDA ('+RDAD.lbl+')', LM+6, y+6);
             setTxt(7.5, MUTED, false);
-            doc.text('Cal: '+tC+'/'+RDAD.cal+' kcal   Prot: '+tP+'/'+RDAD.pro+'g   Carbs: '+tCb+'/'+RDAD.carb+'g   Fat: '+tF+'/'+RDAD.fat+'g   Fiber: '+tFb+'/'+RDAD.fib+'g', LM+6, y+13);
+            const calTarget  = (window.calorieTarget) || RDAD.cal;
+            const proTarget  = (window.macroTargets && window.macroTargets.protein_g) || RDAD.pro;
+            const carbTarget = (window.macroTargets && window.macroTargets.carbs_g) || RDAD.carb;
+            const fatTarget  = (window.macroTargets && window.macroTargets.fat_g) || RDAD.fat;
+            const fibTarget  = (window.macroTargets && window.macroTargets.fiber_g) || RDAD.fib;
+            doc.text('Cal: '+Math.round(tC)+'/'+Math.round(calTarget)+' kcal   Prot: '+Math.round(tP)+'/'+Math.round(proTarget)+'g   Carbs: '+Math.round(tCb)+'/'+Math.round(carbTarget)+'g   Fat: '+Math.round(tF)+'/'+Math.round(fatTarget)+'g   Fiber: '+Math.round(tFb)+'/'+Math.round(fibTarget)+'g', LM+6, y+13);
             y+=20;
 
             // Footer

@@ -84,6 +84,22 @@ NUTRITION_DB = {
     "Soybean oil":     {"calories": 884, "protein_g": 0.0,  "carbs_g": 0.0,  "fat_g": 100.0, "fiber_g": 0.0},
     "Whey protein":    {"calories": 352, "protein_g": 78.1, "carbs_g": 10.4, "fat_g": 4.2,   "fiber_g": 0.0},
     "Popcorn":         {"calories": 387, "protein_g": 12.9, "carbs_g": 77.9, "fat_g": 4.5,   "fiber_g": 14.5},
+    "Orange juice":      {"calories": 45,  "protein_g": 0.7,  "carbs_g": 10.4, "fat_g": 0.2,   "fiber_g": 0.2},
+    "Chokeberry":        {"calories": 47,  "protein_g": 1.3,  "carbs_g": 9.6,  "fat_g": 0.5,   "fiber_g": 5.3},
+    "Kefir":             {"calories": 61,  "protein_g": 3.4,  "carbs_g": 4.7,  "fat_g": 3.3,   "fiber_g": 0.0},
+    "Psyllium":          {"calories": 340, "protein_g": 2.4,  "carbs_g": 88.9, "fat_g": 1.0,   "fiber_g": 85.7},
+    "Lady's finger":     {"calories": 33,  "protein_g": 1.9,  "carbs_g": 7.5,  "fat_g": 0.2,   "fiber_g": 3.2},
+    "Ladies finger":     {"calories": 33,  "protein_g": 1.9,  "carbs_g": 7.5,  "fat_g": 0.2,   "fiber_g": 3.2},
+    "Lady finger":       {"calories": 33,  "protein_g": 1.9,  "carbs_g": 7.5,  "fat_g": 0.2,   "fiber_g": 3.2},
+    "Okra":              {"calories": 33,  "protein_g": 1.9,  "carbs_g": 7.5,  "fat_g": 0.2,   "fiber_g": 3.2},
+    "Green peas":        {"calories": 81,  "protein_g": 5.4,  "carbs_g": 14.5, "fat_g": 0.4,   "fiber_g": 5.1},
+    "Beetroot juice":    {"calories": 45,  "protein_g": 1.7,  "carbs_g": 9.9,  "fat_g": 0.1,   "fiber_g": 2.0},
+    "Grape fruit juice": {"calories": 38,  "protein_g": 0.5,  "carbs_g": 9.2,  "fat_g": 0.1,   "fiber_g": 0.1},
+    "Green tea":         {"calories": 1,   "protein_g": 0.2,  "carbs_g": 0.0,  "fat_g": 0.0,   "fiber_g": 0.0},
+    "Oolong tea":        {"calories": 1,   "protein_g": 0.0,  "carbs_g": 0.3,  "fat_g": 0.0,   "fiber_g": 0.0},
+    "Fresh cream":       {"calories": 345, "protein_g": 2.8,  "carbs_g": 2.8,  "fat_g": 37.0,  "fiber_g": 0.0},
+    "Kimchi":            {"calories": 15,  "protein_g": 1.1,  "carbs_g": 2.4,  "fat_g": 0.5,   "fiber_g": 1.6},
+    "Arrowroot":         {"calories": 357, "protein_g": 0.3,  "carbs_g": 88.2, "fat_g": 0.1,   "fiber_g": 3.4},
 }
 
 
@@ -445,63 +461,36 @@ def _calculate_calorie_target(patient: dict) -> tuple:
 def _call_bedrock(prompt: str) -> str:
     """
     LLM routing:
-    1. Groq Llama-3.1-8b-instant (testing — set GROQ_API_KEY)
-    2. OpenAI GPT-3.5-turbo (testing — set OPENAI_API_KEY)
-    3. AWS Bedrock Nova Micro (production — default)
+    1. Mistral Small (testing — set MISTRAL_API_KEY)
+    2. AWS Bedrock Nova Micro (production — default)
     """
     import urllib.request
 
-    # 1. Groq — fast, free tier
-    groq_key = os.environ.get('GROQ_API_KEY', '')
-    if groq_key:
+    # 1. Mistral — fast, free tier
+    mistral_key = os.environ.get('MISTRAL_API_KEY', '')
+    if mistral_key:
         try:
             payload = json.dumps({
-                'model': 'llama-3.1-8b-instant',
+                'model': 'mistral-small-latest',
                 'messages': [{'role': 'user', 'content': prompt}],
                 'max_tokens': 4000,
                 'temperature': 0.7
             }).encode()
-            url = 'https://api.groq.com/openai/v1/chat/completions'
-            logger.info(f'Groq key prefix: {groq_key[:8]}... URL: {url}')
             req = urllib.request.Request(
-                url,
+                'https://api.mistral.ai/v1/chat/completions',
                 data=payload,
                 headers={
                     'Content-Type': 'application/json',
-                    'Authorization': f'Bearer {groq_key}'
+                    'Authorization': f'Bearer {mistral_key}'
                 }
             )
             with urllib.request.urlopen(req, timeout=60) as resp:
                 result = json.loads(resp.read())
                 return result['choices'][0]['message']['content']
         except Exception as e:
-            logger.warning(f'Groq failed: {e}, falling to OpenAI/Bedrock')
+            logger.warning(f'Mistral failed: {e}, falling to Bedrock')
 
-    # 2. OpenAI — for testing, free $5 credit, no daily limits
-    openai_key = os.environ.get('OPENAI_API_KEY', '')
-    if openai_key:
-        try:
-            payload = json.dumps({
-                'model': 'gpt-3.5-turbo',
-                'messages': [{'role': 'user', 'content': prompt}],
-                'max_tokens': 4000,
-                'temperature': 0.7
-            }).encode()
-            req = urllib.request.Request(
-                'https://api.openai.com/v1/chat/completions',
-                data=payload,
-                headers={
-                    'Content-Type': 'application/json',
-                    'Authorization': f'Bearer {openai_key}'
-                }
-            )
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                result = json.loads(resp.read())
-                return result['choices'][0]['message']['content']
-        except Exception as e:
-            logger.warning(f'OpenAI failed: {e}, falling to Bedrock')
-
-    # 3. AWS Bedrock — production
+    # 2. AWS Bedrock — production
     response = bedrock.converse(
         modelId=LLM_MODEL_ID,
         messages=[{'role': 'user', 'content': [{'text': prompt}]}],

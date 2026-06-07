@@ -90,28 +90,11 @@
                 <input type="text" class="modal-input" id="addMealType" placeholder="e.g. Side Dish (Breakfast)">
                 <label class="modal-label" style="margin-top:12px">Dish Name</label>
                 <input type="text" class="modal-input" id="addMealName" placeholder="e.g. Cucumber Raita">
-                <label class="modal-label" style="margin-top:12px">Ingredients (comma-separated)</label>
-                <input type="text" class="modal-input" id="addMealIngredients"
-                    placeholder="e.g. Curd, Cucumber, Cumin, Salt">
-                <div class="modal-macros-grid"
-                    style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px">
-                    <div>
-                        <label class="modal-label">Calories</label>
-                        <input type="number" class="modal-input" id="addMealCal" value="0" min="0">
-                    </div>
-                    <div>
-                        <label class="modal-label">Protein (g)</label>
-                        <input type="number" class="modal-input" id="addMealPro" value="0" min="0">
-                    </div>
-                    <div>
-                        <label class="modal-label">Carbs (g)</label>
-                        <input type="number" class="modal-input" id="addMealCarb" value="0" min="0">
-                    </div>
-                    <div>
-                        <label class="modal-label">Fat (g)</label>
-                        <input type="number" class="modal-input" id="addMealFat" value="0" min="0">
-                    </div>
-                </div>
+                <label class="modal-label" style="margin-top:12px">Ingredients</label>
+                <div id="ingRows"></div>
+                <button type="button" class="btn-secondary" onclick="addIngredientRow()"
+                    style="margin-top:8px">➕ Add another ingredient</button>
+                <div id="nutritionPreview" style="margin-top:10px"></div>
             </div>
             <div class="modal-footer">
                 <button class="btn-swap" onclick="confirmAddMeal()">✅ Add Dish</button>

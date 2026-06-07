@@ -2,8 +2,8 @@
 Local test script — runs full meal plan generation.
 No AWS credentials needed.
 
-Setup (OpenAI for testing):
-  1. export OPENAI_API_KEY=sk-...
+Setup (Mistral for testing):
+  1. export MISTRAL_API_KEY=your-key-here
   2. Run this: python3 test_local.py
 
 For mentor demo:
@@ -14,9 +14,8 @@ For mentor demo:
 
 import json, os, sys, unittest.mock as mock
 
-# LLM routing — OpenAI for testing, Bedrock in production
-os.environ['OPENAI_API_KEY'] = os.environ.get('OPENAI_API_KEY', '')
-os.environ['GROQ_API_KEY'] = os.environ.get('GROQ_API_KEY', '')
+# LLM routing — Mistral for testing, Bedrock in production
+os.environ['MISTRAL_API_KEY'] = os.environ.get('MISTRAL_API_KEY', '')
 os.environ['DATA_BUCKET'] = 'local-test'
 os.environ['MEAL_PLANS_TABLE'] = 'local-test'
 os.environ['RECIPES_TABLE'] = 'local-test'
@@ -30,7 +29,7 @@ sys.path.insert(0, 'backend/lambdas/generate_meal')
 import lambda_function as lf
 
 # If no LLM key available, patch _call_bedrock to return a test response
-if not os.environ.get('OPENAI_API_KEY') and not os.environ.get('ANTHROPIC_API_KEY') and not os.environ.get('GROQ_API_KEY'):
+if not os.environ.get('ANTHROPIC_API_KEY') and not os.environ.get('MISTRAL_API_KEY'):
     def mock_call_bedrock(prompt):
         return '{"day_1": {"breakfast": {"name": "Test Meal", "ingredients": [], "total_calories": 0, "protein_g": 0, "carbs_g": 0, "fat_g": 0, "fiber_g": 0, "prep_time_min": 15, "benefits": "test"}, "mid_morning_snack": {"name": "Test Snack", "ingredients": [], "total_calories": 0, "protein_g": 0, "carbs_g": 0, "fat_g": 0, "fiber_g": 0, "prep_time_min": 10, "benefits": "test"}, "lunch": {"name": "Test Lunch", "ingredients": [], "total_calories": 0, "protein_g": 0, "carbs_g": 0, "fat_g": 0, "fiber_g": 0, "prep_time_min": 20, "benefits": "test"}, "evening_snack": {"name": "Test Evening", "ingredients": [], "total_calories": 0, "protein_g": 0, "carbs_g": 0, "fat_g": 0, "fiber_g": 0, "prep_time_min": 5, "benefits": "test"}, "dinner": {"name": "Test Dinner", "ingredients": [], "total_calories": 0, "protein_g": 0, "carbs_g": 0, "fat_g": 0, "fiber_g": 0, "prep_time_min": 20, "benefits": "test"}}}'
     lf._call_bedrock = mock_call_bedrock
@@ -73,7 +72,7 @@ def test_patient(kit_id, patient_file):
     approved = lf._get_approved_foods(patient, nutrition_data)
 
     # Try LLM generation
-    print('Calling OpenAI GPT-3.5-turbo...' if os.environ.get('OPENAI_API_KEY') else 'Calling AWS Bedrock...')
+    print('Calling Mistral...' if os.environ.get('MISTRAL_API_KEY') else 'Calling AWS Bedrock...')
     try:
         plan = lf._generate_meal_plan(patient, approved)
         # Enrich with nutrition (uses the lambda's existing enrichment fn)
@@ -105,7 +104,7 @@ def test_patient(kit_id, patient_file):
 
 if __name__ == '__main__':
     print('NutriGenie — Local Test')
-    print('Set OPENAI_API_KEY for real LLM output (else falls back to Bedrock)')
+    print('Set MISTRAL_API_KEY for real LLM output (else falls back to Bedrock)')
     print()
 
     patients = [
@@ -121,5 +120,5 @@ if __name__ == '__main__':
 
     print('\n' + '='*60)
     print('Test complete.')
-    print('For production: set OPENAI_API_KEY or AWS Bedrock credentials')
+    print('For production: set MISTRAL_API_KEY or AWS Bedrock credentials')
     print('='*60)
