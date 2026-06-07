@@ -190,6 +190,38 @@ Resources:
             Method: GET
             RestApiId: !Ref NutriGenieApi
 
+  # ─── CloudFront (HTTPS for the frontend) ───────────
+  FrontendDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: NutriGenie frontend (HTTPS)
+        DefaultRootObject: index.html
+        PriceClass: PriceClass_100
+        Origins:
+          - Id: S3WebsiteOrigin
+            # S3 *website* endpoint must be a custom origin (http-only); strip scheme from WebsiteURL
+            DomainName: !Select [1, !Split ['://', !GetAtt FrontendBucket.WebsiteURL]]
+            CustomOriginConfig:
+              OriginProtocolPolicy: http-only
+              HTTPPort: 80
+              HTTPSPort: 443
+              OriginSSLProtocols:
+                - TLSv1.2
+        DefaultCacheBehavior:
+          TargetOriginId: S3WebsiteOrigin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachedMethods: [GET, HEAD]
+          Compress: true
+          ForwardedValues:
+            QueryString: false
+            Cookies:
+              Forward: none
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: true
+
   # ─── Lambda Layer (pypdf) ──────────────────────────
   PyPdfLayer:
     Type: AWS::Serverless::LayerVersion
@@ -215,8 +247,11 @@ Outputs:
     Description: API Gateway endpoint
     Value: !Sub 'https://${NutriGenieApi}.execute-api.${AWS::Region}.amazonaws.com/prod'
   FrontendUrl:
-    Description: Frontend website URL
+    Description: Frontend website URL (HTTP only — use FrontendHttpsUrl on mobile)
     Value: !GetAtt FrontendBucket.WebsiteURL
+  FrontendHttpsUrl:
+    Description: Frontend HTTPS URL via CloudFront (works on mobile)
+    Value: !Sub 'https://${FrontendDistribution.DomainName}'
   DataBucket:
     Description: S3 bucket for patient and nutrition data
     Value: !Ref DataBucket
